@@ -29,6 +29,7 @@ import { CHANNEL_LABEL, channelOrder, partIsMuted, setPartMuted } from "./mixer.
 import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
 import { zipStore } from "./zip.js";
+import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
 const FAVORITES_KEY = "bandmatch.v1.favorites";
@@ -839,11 +840,38 @@ function bindScrub(el) {
   });
 }
 
+function renderSuggestions() {
+  const root = document.querySelector("#suggestions");
+  if (!root) return;
+  const picks = suggestLineup(state.slots, MUSICIANS, 4);
+  if (!picks.length) {
+    root.innerHTML = `<section class="suggestions" aria-label="Lineup suggestions">
+      <h3>Suggestions</h3>
+      <p class="fine">Every chair is filled. Suggestions never change the lineup on their own.</p>
+    </section>`;
+    return;
+  }
+  root.innerHTML = `<section class="suggestions" aria-label="Lineup suggestions">
+    <h3>Suggestions</h3>
+    <p class="fine">Ideas from the pool. Nothing is seated until you choose it.</p>
+    <ul>
+      ${picks.map((pick) => `<li>
+        <button type="button" class="suggestion" data-suggest="${esc(pick.id)}" data-suggest-role="${esc(pick.role)}">
+          <strong>${esc(pick.name)}</strong>
+          <span>${esc(ROLE_LABEL[pick.role])}</span>
+          <em>${esc(pick.reason)}</em>
+        </button>
+      </li>`).join("")}
+    </ul>
+  </section>`;
+}
+
 function render() {
   renderSlots();
   renderPool();
   renderFilters();
   renderFavorites();
+  renderSuggestions();
   updateChrome();
 }
 
@@ -1206,6 +1234,18 @@ slotsEl.addEventListener("click", (event) => {
     return;
   }
   if (event.target.closest("[data-select]")) selectSlot(slot.dataset.slot);
+});
+
+document.querySelector("#suggestions").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-suggest]");
+  if (!button) return;
+  const person = MUSICIANS.find((item) => item.id === button.dataset.suggest);
+  const role = button.dataset.suggestRole;
+  if (!person || !person.roles.includes(role) || state.slots[role]) return;
+  state.selected = role;
+  state.roleFilter = role;
+  state.swapFrom = null;
+  assign(person);
 });
 
 poolEl.addEventListener("click", (event) => {
