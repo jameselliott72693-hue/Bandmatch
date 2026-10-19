@@ -575,7 +575,8 @@ export function generateSong(slots, seed) {
 
   let timeSignature = "4/4";
   const flexible = !["metal", "punk", "hiphop", "blues", "funk"].includes(bank);
-  if (flexible && (scores.prog || 0) >= 0.8 && rng() < 0.55) timeSignature = "7/8";
+  const progMeter = (scores.prog || 0) >= 0.8 && rng() < 0.55;
+  if ((flexible || bank === "metal") && progMeter) timeSignature = "7/8";
   else if (flexible && ((scores.country || 0) >= 1 || (scores.folk || 0) >= 1) && tempo < 112 && rng() < 0.3) {
     timeSignature = "3/4";
   } else if (flexible && swingRaw > 0.55 && tempo < 100 && weight < 0.5 && rng() < 0.22) {
