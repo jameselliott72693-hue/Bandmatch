@@ -1,5 +1,6 @@
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
+import { compactEdit, draftFromSong, expandEdit, performSong } from "../js/edit.js";
 import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
@@ -349,6 +350,67 @@ try {
 } catch (error) {
   fail(`midi parse: ${error.message}`);
 }
+
+const slowed = performSong(a, { ...draftFromSong(a), tempo: 90 });
+if (slowed.tempo !== 90) fail(`edited tempo ${slowed.tempo}`);
+if (slowed.title !== a.title) fail("edit changed the imagined title");
+const slowedAgain = performSong(a, draftFromSong(slowed));
+if (JSON.stringify(slowedAgain.arrangement.bass) !== JSON.stringify(slowed.arrangement.bass)) {
+  fail("the same edit did not replay the same bass");
+}
+const lyricDraft = draftFromSong(a);
+lyricDraft.sections.find((section) => section.lines.length).lines[0] = "A brand new imagined line";
+const lyricSong = performSong(a, lyricDraft);
+if (!lyricSong.structure.some((section) => section.lines[0] === "A brand new imagined line")) fail("lyric edit did not stick");
+if (JSON.stringify(lyricSong.arrangement.lead) !== JSON.stringify(performSong(a, lyricDraft).arrangement.lead)) {
+  fail("lyric edit changed the lead");
+}
+const chordDraft = draftFromSong(a);
+const targetPc = (chordDraft.sections[0].chords[0].pc + 3) % 12;
+chordDraft.sections[0].chords[0] = { pc: targetPc, quality: chordDraft.sections[0].chords[0].quality };
+const retuned = performSong(a, chordDraft);
+const heard = retuned.arrangement.chords[0]?.midis?.[0];
+if (heard == null || ((heard % 12) + 12) % 12 !== targetPc) fail(`section chord did not reach the arrangement (${heard})`);
+const editPacked = encodeShare(fixed, "k3m9qx", { edit: compactEdit(slowed, a) });
+const editDecoded = decodeShare(editPacked);
+if (!editDecoded.edit) fail("compact edit missing from share");
+const editSong = performSong(generateSong(editDecoded.slots, editDecoded.seed), expandEdit(a, editDecoded.edit));
+if (editSong.tempo !== 90) fail("shared edit did not restore tempo");
+function noisyLine(index) {
+  let value = index + 17;
+  let text = "";
+  for (let i = 0; i < 90; i += 1) {
+    value = (Math.imul(value, 1103515245) + 12345) >>> 0;
+    text += "abcdefghij"[value % 10];
+  }
+  return text;
+}
+const fat = {
+  t: 100,
+  S: Array.from({ length: 24 }, (_, index) => ({
+    r: "v",
+    b: 8,
+    c: "0.maj,5.maj,7.maj,0.maj",
+    l: [0, 1, 2, 3, 4, 5].map((line) => noisyLine(index * 6 + line)),
+  })),
+};
+const fatPacked = encodeShare(fixed, "k3m9qx", { edit: fat });
+const fatDecoded = decodeShare(fatPacked);
+if (fatDecoded.edit || !fatDecoded.editHash) fail("overlong edit should fall back to a hash");
+if (fatPacked.length > 2500) fail(`fallback link is still long (${fatPacked.length})`);
+const medium = {
+  t: 88,
+  S: Array.from({ length: 8 }, (_, index) => ({
+    r: index % 2 ? "c" : "v",
+    b: 8,
+    c: "2.min,7.maj,9.min,0.maj",
+    l: [`Imagined line ${index}`, "Second line of the section", "Third line stays original", "Fourth line closes it"],
+  })),
+};
+const mediumPacked = encodeShare(fixed, "k3m9qx", { edit: medium });
+const mediumDecoded = decodeShare(mediumPacked);
+if (mediumDecoded.edit?.t !== 88) fail("medium edit did not round-trip");
+if (!mediumDecoded.edit.S || mediumDecoded.edit.S.length !== 8) fail("medium edit dropped sections");
 
 if (failures.length) {
   console.error(failures.join("\n"));

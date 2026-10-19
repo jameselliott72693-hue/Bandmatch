@@ -8,6 +8,22 @@ import {
   roleLabel,
 } from "./musicians.js";
 import { drawCover } from "./cover.js";
+import {
+  KEY_OPTIONS,
+  SECTION_ROLES,
+  blankSection,
+  chordSymbol,
+  compactEdit,
+  draftFromSong,
+  editStorageKey,
+  expandEdit,
+  formatProgression,
+  parseChord,
+  parseProgression,
+  performSong,
+  setMode,
+  transposeDraft,
+} from "./edit.js";
 import { CHANNEL_LABEL, channelOrder, partIsMuted, setPartMuted } from "./mixer.js";
 import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
@@ -25,6 +41,10 @@ const state = {
   song: null,
   favorites: loadFavorites(),
   mutes: { drums: false, bass: false, chords: false, lead: false, horns: false, dj: false, strings: false },
+  originSong: null,
+  history: [],
+  future: [],
+  editMarked: false,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -279,16 +299,17 @@ function renderSong() {
       </div>
       <p id="stale" class="banner" ${isStale() ? "" : "hidden"}>The lineup changed. Imagine again to match this group. Playback stays off until you do.</p>
       <dl class="meta">
-        <div><dt>Tempo</dt><dd>${song.tempo} BPM</dd></div>
-        <div><dt>Key</dt><dd>${esc(song.key)}</dd></div>
-        <div><dt>Meter</dt><dd>${esc(song.timeSignature)}</dd></div>
-        <div><dt>Length</dt><dd>${esc(song.durationLabel)}</dd></div>
+        <div><dt>Tempo</dt><dd id="meta-tempo">${song.tempo} BPM</dd></div>
+        <div><dt>Key</dt><dd id="meta-key">${esc(song.key)}</dd></div>
+        <div><dt>Meter</dt><dd id="meta-meter">${esc(song.timeSignature)}</dd></div>
+        <div><dt>Length</dt><dd id="meta-length">${esc(song.durationLabel)}</dd></div>
         <div><dt>Seed</dt><dd><code>${esc(song.seed)}</code></dd></div>
       </dl>
+      ${editorMarkup(song)}
       <div class="roster">
         ${song.roster.map((entry) => `<span><em>${esc(ROLE_LABEL[entry.role])}</em> ${esc(entry.name)}</span>`).join("")}
       </div>
-      <h3>Structure <span>${esc(song.durationLabel)} · ${song.bars} bars</span></h3>
+      <h3>Structure <span id="structure-length">${esc(song.durationLabel)} · ${song.bars} bars</span></h3>
       <div class="sections">
         ${song.structure.map((section) => `<button type="button" data-seek-section="${section.index}" data-section="${section.index}"><strong>${esc(section.name)}</strong><span>${section.bars}</span></button>`).join("")}
       </div>
@@ -328,7 +349,7 @@ function renderSong() {
       <div class="timeline">
         <div class="timeline-times">
           <span id="time-now">0:00</span>
-          <span>${esc(song.durationLabel)}</span>
+          <span id="time-end">${esc(song.durationLabel)}</span>
         </div>
         <div class="timeline-bar" id="timeline" role="slider" tabindex="0" aria-label="Song position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0:00">
           <span class="timeline-fill" id="timeline-fill"></span>
@@ -387,6 +408,7 @@ function renderSong() {
     });
   });
   bindMixer();
+  bindEditor();
 }
 
 function mixerMarkup(song) {
@@ -414,6 +436,295 @@ function mixerMarkup(song) {
     <p class="fine">One channel for each filled chair. Empty core parts share Backing. Tone darkens or drives the channel. Reverb is a shared synthesized room, and a limiter sits on the master. Volume and pan are written into the MIDI; the WAV uses this mix.</p>
     <div class="strips">${strips}</div>
   </section>`;
+}
+
+function editorMarkup(song) {
+  const spellOf = (name) => (name.includes("b") ? "flat" : "sharp");
+  const keyChoices = KEY_OPTIONS.map((name) => {
+    const chord = parseChord(name);
+    return { name, pc: chord.pc, spell: spellOf(name) };
+  });
+  const exactKey = keyChoices.some((choice) => choice.pc === song.keyPc && choice.spell === song.spell);
+  const keys = keyChoices.map((choice) => {
+    const selected = exactKey
+      ? choice.pc === song.keyPc && choice.spell === song.spell
+      : choice.pc === song.keyPc && choice.spell === "sharp";
+    return `<option value="${choice.pc}:${choice.spell}"${selected ? " selected" : ""}>${choice.name}</option>`;
+  }).join("");
+  const meters = ["4/4", "3/4", "6/8", "7/8"].map((meter) => (
+    `<option value="${meter}"${meter === song.timeSignature ? " selected" : ""}>${meter}</option>`
+  )).join("");
+  const cards = song.structure.map((section, index) => {
+    const roles = SECTION_ROLES.map(([role, label]) => (
+      `<option value="${role}"${role === section.role ? " selected" : ""}>${label}</option>`
+    )).join("");
+    return `<article class="edit-card">
+      <div class="edit-card-top">
+        <label>Name <input data-edit="name" data-index="${index}" value="${esc(section.name)}" maxlength="40" aria-label="Section ${index + 1} name"></label>
+        <label>Role <select data-edit="role" data-index="${index}" aria-label="Section ${index + 1} role">${roles}</select></label>
+        <label>Bars <input data-edit="bars" data-index="${index}" type="number" min="1" max="48" value="${section.bars}" aria-label="Section ${index + 1} bars"></label>
+      </div>
+      <div class="edit-card-moves">
+        <button type="button" data-move="up" data-index="${index}" ${index === 0 ? "disabled" : ""}>Up</button>
+        <button type="button" data-move="down" data-index="${index}" ${index === song.structure.length - 1 ? "disabled" : ""}>Down</button>
+        <button type="button" data-move="duplicate" data-index="${index}">Duplicate</button>
+        <button type="button" data-move="remove" data-index="${index}" ${song.structure.length < 2 ? "disabled" : ""}>Remove</button>
+      </div>
+      <label>Chords <input class="chord-field" data-edit="chords" data-index="${index}" value="${esc(formatProgression(section.chords, song.spell))}" aria-label="Section ${index + 1} chords" spellcheck="false"></label>
+      <label>Lyrics <textarea data-edit="lyrics" data-index="${index}" rows="${Math.max(2, (section.lines || []).length || 2)}" aria-label="Section ${index + 1} lyrics">${esc((section.lines || []).join("\n"))}</textarea></label>
+    </article>`;
+  }).join("");
+  const addRoles = SECTION_ROLES.map(([role, label]) => `<option value="${role}">${label}</option>`).join("");
+  return `<section class="editor" aria-label="Edit this song">
+    <div class="edit-head">
+      <h3>Edit this song</h3>
+      <div class="edit-history">
+        <button type="button" class="btn" id="undo" ${state.history.length ? "" : "disabled"}>Undo</button>
+        <button type="button" class="btn" id="redo" ${state.future.length ? "" : "disabled"}>Redo</button>
+        <button type="button" class="btn" id="reset-song">Reset to the original imagined song</button>
+      </div>
+    </div>
+    <p class="fine">Changes play right away. Chords are written as symbols, like Am7 D G. Reset puts back the song Bandmatch first imagined for this lineup and seed.</p>
+    <div class="edit-bar">
+      <label>Tempo <input id="edit-tempo" type="number" min="40" max="220" value="${song.tempo}" aria-label="Tempo"></label>
+      <label>Key <select id="edit-key" aria-label="Key">${keys}</select></label>
+      <label>Mode <select id="edit-mode" aria-label="Mode"><option value="major"${song.mode === "major" ? " selected" : ""}>Major</option><option value="minor"${song.mode === "minor" ? " selected" : ""}>Minor</option></select></label>
+      <label>Meter <select id="edit-meter" aria-label="Time signature">${meters}</select></label>
+    </div>
+    <div class="edit-add">
+      <label>Add a section <select id="add-role" aria-label="Section to add">${addRoles}</select></label>
+      <button type="button" class="btn" id="add-section">Add</button>
+    </div>
+    ${cards}
+  </section>`;
+}
+
+function cloneSong(song) {
+  return JSON.parse(JSON.stringify(song));
+}
+
+function refreshHistoryButtons() {
+  const undo = document.querySelector("#undo");
+  const redo = document.querySelector("#redo");
+  if (undo) undo.disabled = state.history.length === 0;
+  if (redo) redo.disabled = state.future.length === 0;
+}
+
+function noteEdit() {
+  if (state.editMarked || !state.song) return;
+  state.history.push(cloneSong(state.song));
+  if (state.history.length > 30) state.history.shift();
+  state.future = [];
+  state.editMarked = true;
+  refreshHistoryButtons();
+}
+
+function shareExtra(song) {
+  return {
+    mixer: song.mixer,
+    edit: state.originSong ? compactEdit(song, state.originSong) : null,
+  };
+}
+
+function patchReadout() {
+  const song = state.song;
+  if (!song) return;
+  const tempo = document.querySelector("#meta-tempo");
+  if (tempo) tempo.textContent = `${song.tempo} BPM`;
+  const key = document.querySelector("#meta-key");
+  if (key) key.textContent = song.key;
+  const meter = document.querySelector("#meta-meter");
+  if (meter) meter.textContent = song.timeSignature;
+  const length = document.querySelector("#meta-length");
+  if (length) length.textContent = song.durationLabel;
+  const structure = document.querySelector("#structure-length");
+  if (structure) structure.textContent = `${song.durationLabel} · ${song.bars} bars`;
+  const end = document.querySelector("#time-end");
+  if (end) end.textContent = song.durationLabel;
+  const transport = document.querySelector(".transport-meta");
+  if (transport) transport.textContent = `${song.tempo} BPM · ${song.key} · ${song.timeSignature}`;
+  const pocket = document.querySelector(".pocket");
+  if (pocket) pocket.textContent = song.pocket;
+  const duration = song.duration || 1;
+  document.querySelectorAll(".marker").forEach((marker) => {
+    const section = song.structure[Number(marker.dataset.seekSection)];
+    if (section) marker.style.left = `${(section.startTime / duration) * 100}%`;
+  });
+}
+
+function installSong(song) {
+  const ratio = player.duration ? player.currentTime() / player.duration : 0;
+  const was = player.playing;
+  state.song = song;
+  renderSong();
+  const at = Math.max(0, Math.min(song.duration || 0, ratio * (song.duration || 0)));
+  player.seekTo(at);
+  if (was && !isStale()) player.play().catch(() => toast("This browser couldn't start audio."));
+  state.editMarked = false;
+  refreshHistoryButtons();
+  rememberMix();
+}
+
+function applyDraft(draft, rerender) {
+  const ratio = player.duration ? player.currentTime() / player.duration : 0;
+  const was = player.playing;
+  const song = performSong(state.song, draft);
+  state.song = song;
+  if (rerender) {
+    renderSong();
+    state.editMarked = false;
+  } else {
+    player.load(song.arrangement);
+    player.setMixer(song.mixer);
+    patchReadout();
+  }
+  const at = Math.max(0, Math.min(song.duration || 0, ratio * (song.duration || 0)));
+  player.seekTo(at);
+  if (was && !isStale()) player.play().catch(() => toast("This browser couldn't start audio."));
+  refreshHistoryButtons();
+  rememberMix();
+}
+
+function paintLyrics() {
+  const root = document.querySelector(".lyrics");
+  if (!root || !state.song) return;
+  root.innerHTML = state.song.structure.filter((section) => (section.lines || []).some((line) => line.trim())).map((section) => `
+    <div class="lyric-block" data-section="${section.index}">
+      <h3>${esc(section.name)}</h3>
+      ${(section.lines || []).filter((line) => line.trim()).map((line) => `<p>${esc(line)}</p>`).join("")}
+    </div>`).join("");
+}
+
+function bindEditor() {
+  const tempo = document.querySelector("#edit-tempo");
+  if (!tempo) return;
+  let tempoTimer = 0;
+  tempo.addEventListener("input", () => {
+    noteEdit();
+    window.clearTimeout(tempoTimer);
+    tempoTimer = window.setTimeout(() => {
+      const draft = draftFromSong(state.song);
+      draft.tempo = Number(tempo.value);
+      applyDraft(draft, false);
+    }, 140);
+  });
+  tempo.addEventListener("change", () => {
+    state.editMarked = false;
+  });
+  document.querySelector("#edit-key").addEventListener("change", (event) => {
+    const [pc, spell] = event.target.value.split(":");
+    noteEdit();
+    const draft = draftFromSong(state.song);
+    transposeDraft(draft, Number(pc), spell);
+    applyDraft(draft, true);
+  });
+  document.querySelector("#edit-mode").addEventListener("change", (event) => {
+    noteEdit();
+    const draft = draftFromSong(state.song);
+    setMode(draft, event.target.value);
+    applyDraft(draft, true);
+  });
+  document.querySelector("#edit-meter").addEventListener("change", (event) => {
+    noteEdit();
+    const draft = draftFromSong(state.song);
+    draft.timeSignature = event.target.value;
+    applyDraft(draft, true);
+  });
+  document.querySelector("#undo").addEventListener("click", () => {
+    if (!state.history.length) return;
+    state.future.push(cloneSong(state.song));
+    installSong(state.history.pop());
+  });
+  document.querySelector("#redo").addEventListener("click", () => {
+    if (!state.future.length) return;
+    state.history.push(cloneSong(state.song));
+    installSong(state.future.pop());
+  });
+  document.querySelector("#reset-song").addEventListener("click", () => {
+    if (!state.originSong) return;
+    noteEdit();
+    installSong(cloneSong(state.originSong));
+  });
+  document.querySelector("#add-section").addEventListener("click", () => {
+    const draft = draftFromSong(state.song);
+    const role = document.querySelector("#add-role").value;
+    noteEdit();
+    draft.sections.push(blankSection(role, draft.sections.at(-1)?.chords || draft.sections[0].chords));
+    applyDraft(draft, true);
+  });
+  document.querySelectorAll("[data-edit='name']").forEach((input) => {
+    input.addEventListener("change", () => {
+      noteEdit();
+      const draft = draftFromSong(state.song);
+      draft.sections[Number(input.dataset.index)].name = input.value;
+      applyDraft(draft, true);
+    });
+  });
+  document.querySelectorAll("[data-edit='role']").forEach((input) => {
+    input.addEventListener("change", () => {
+      noteEdit();
+      const draft = draftFromSong(state.song);
+      const section = draft.sections[Number(input.dataset.index)];
+      const previous = SECTION_ROLES.find((entry) => entry[0] === section.role)?.[1];
+      section.role = input.value;
+      const next = SECTION_ROLES.find((entry) => entry[0] === input.value)?.[1];
+      if (section.name === previous) section.name = next;
+      applyDraft(draft, true);
+    });
+  });
+  document.querySelectorAll("[data-edit='bars']").forEach((input) => {
+    input.addEventListener("change", () => {
+      noteEdit();
+      const draft = draftFromSong(state.song);
+      draft.sections[Number(input.dataset.index)].bars = Number(input.value);
+      applyDraft(draft, true);
+    });
+  });
+  document.querySelectorAll("[data-edit='chords']").forEach((input) => {
+    input.addEventListener("change", () => {
+      const chords = parseProgression(input.value);
+      if (!chords) {
+        input.classList.add("is-bad");
+        toast("Use chord symbols separated by spaces, such as Am7 D G.");
+        return;
+      }
+      input.classList.remove("is-bad");
+      noteEdit();
+      const draft = draftFromSong(state.song);
+      draft.sections[Number(input.dataset.index)].chords = chords;
+      applyDraft(draft, true);
+    });
+  });
+  document.querySelectorAll("[data-edit='lyrics']").forEach((input) => {
+    input.addEventListener("focus", () => noteEdit());
+    input.addEventListener("input", () => {
+      const index = Number(input.dataset.index);
+      state.song.structure[index].lines = input.value.split("\n").slice(0, 8);
+      paintLyrics();
+    });
+    input.addEventListener("blur", () => {
+      state.editMarked = false;
+      rememberMix();
+    });
+  });
+  document.querySelectorAll("[data-move]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.index);
+      const draft = draftFromSong(state.song);
+      const [section] = draft.sections.splice(index, 1);
+      if (button.dataset.move === "remove") {
+        if (!draft.sections.length) return;
+      } else if (button.dataset.move === "duplicate") {
+        draft.sections.splice(index, 0, section, JSON.parse(JSON.stringify(section)));
+      } else if (button.dataset.move === "up") {
+        draft.sections.splice(Math.max(0, index - 1), 0, section);
+      } else {
+        draft.sections.splice(Math.min(draft.sections.length, index + 1), 0, section);
+      }
+      noteEdit();
+      applyDraft(draft, true);
+    });
+  });
 }
 
 function refreshMixButtons() {
@@ -608,7 +919,16 @@ function makeSeed() {
 }
 
 function setHash(song) {
-  const encoded = encodeShare(song.slots, song.seed, { mixer: song.mixer });
+  const extra = shareExtra(song);
+  const encoded = encodeShare(song.slots, song.seed, extra);
+  if (extra.edit) {
+    try {
+      const decoded = decodeShare(encoded);
+      if (decoded.editHash) localStorage.setItem(editStorageKey(decoded.editHash), JSON.stringify(extra.edit));
+    } catch {
+      /* the lineup link still works without the edit stash */
+    }
+  }
   history.replaceState(null, "", `#bm=${encoded}`);
   return encoded;
 }
@@ -627,6 +947,10 @@ function imagine(forcedSeed) {
   Object.keys(state.mutes).forEach((part) => player.setMute(part, false));
   const song = generateSong(slots, seed);
   state.song = song;
+  state.originSong = cloneSong(song);
+  state.history = [];
+  state.future = [];
+  state.editMarked = false;
   wasStale = false;
   renderSong();
   render();
@@ -698,7 +1022,7 @@ function saveSong() {
   const song = state.song;
   const entry = {
     key: `${song.seed}:${song.signature}`,
-    encoded: encodeShare(song.slots, song.seed, { mixer: song.mixer }),
+    encoded: encodeShare(song.slots, song.seed, shareExtra(song)),
     title: song.title,
     band: song.bandName,
     detail: `${song.tempo} BPM · ${song.key}`,
@@ -742,7 +1066,21 @@ function applyShared(encoded) {
   state.roleFilter = first;
   state.song = null;
   player.stop();
-  const song = withSharedMix(generateSong(snapshot(state.slots), decoded.seed), decoded.mix);
+  let song = withSharedMix(generateSong(snapshot(state.slots), decoded.seed), decoded.mix);
+  state.originSong = cloneSong(song);
+  state.history = [];
+  state.future = [];
+  state.editMarked = false;
+  let sharedEdit = decoded.edit;
+  if (!sharedEdit && decoded.editHash) {
+    try {
+      sharedEdit = JSON.parse(localStorage.getItem(editStorageKey(decoded.editHash)) || "null");
+    } catch {
+      sharedEdit = null;
+    }
+    if (!sharedEdit) toast("This link's edits were too long to carry on this device, so the original imagined song is open.");
+  }
+  if (sharedEdit) song = performSong(song, expandEdit(state.originSong, sharedEdit));
   state.song = song;
   wasStale = false;
   renderSong();
