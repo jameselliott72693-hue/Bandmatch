@@ -290,6 +290,7 @@ function renderSong() {
           <p class="band-name">${esc(song.bandName)}</p>
           <h2 id="song-title" tabindex="-1">${esc(song.title)}</h2>
           <p class="genre">${esc(song.genreLabel)}</p>
+          <p class="blend">${esc(song.blend || "")}</p>
           <p class="pocket">${esc(song.pocket)}</p>
         </div>
         <figure class="cover">

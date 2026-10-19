@@ -141,6 +141,10 @@ export function arrangeFull(ctx) {
   const bass = [];
   const chords = [];
   const timbre = chooseTimbres(ctx);
+  if (ctx.style?.comp === "skank") timbre.chordRhythm = "skank";
+  else if (ctx.style?.comp === "chug") timbre.chordRhythm = "chug";
+  else if (ctx.style?.comp === "stab") timbre.chordRhythm = "stab";
+  else if (ctx.style?.comp === "pad") timbre.chordRhythm = "sustain";
 
   let bar = 0;
   sections.forEach((section) => {
@@ -396,6 +400,7 @@ function writeBar(state) {
     spb,
     timeSignature: ctx.timeSignature,
     bank: ctx.bank,
+    groove: ctx.style?.groove,
     drumDensity: energy === "full" || (energy === "build" && local >= sectionBars - 2) ? Math.max(drumDensity, 0.7) : drumDensity,
     weight: energy === "full" ? Math.max(ctx.weight, 0.62) : ctx.weight,
   });
@@ -418,10 +423,11 @@ function writeBar(state) {
   if (role === "final" && ctx.timeSignature === "4/4") {
     kick.push({ step: base + 6, gain: 0.38 * gain });
   }
-  if (fill) addFill(snare, base, spb, drumDensity);
+  if (fill) addFill(snare, base, spb, ctx.style?.fill === "sparse" ? Math.min(drumDensity, 0.4) : drumDensity);
 
   writeBass({
     bass, base, spb, chord, nextChord, energy, bank: ctx.bank, timeSignature: ctx.timeSignature, bassDensity, swing: ctx.swing,
+    bassline: ctx.style?.bass,
   });
   writeChords({
     chords, base, spb, chord, energy, local, timeSignature: ctx.timeSignature, timbre, drumDensity,
@@ -442,8 +448,9 @@ function addFill(snare, base, spb, drumDensity) {
   }
 }
 
-function drumsBase({ kick, snare, hat, base, spb, timeSignature, bank, drumDensity, weight }) {
+function drumsBase({ kick, snare, hat, base, spb, timeSignature, bank, groove, drumDensity, weight }) {
   const hatsEvery = drumDensity > 0.62 ? 1 : 2;
+  if (timeSignature === "4/4" && groove && groovePattern({ kick, snare, hat, base, groove, drumDensity, weight, hatsEvery })) return;
   if (timeSignature === "3/4") {
     kick.push({ step: base, gain: 0.8 });
     snare.push({ step: base + 4, gain: 0.28 }, { step: base + 8, gain: 0.28 });
@@ -498,6 +505,70 @@ function drumsBase({ kick, snare, hat, base, spb, timeSignature, bank, drumDensi
   }
 }
 
+function groovePattern({ kick, snare, hat, base, groove, drumDensity, weight, hatsEvery }) {
+  const hats = (every) => {
+    for (let i = 0; i < 16; i += every) hat.push({ step: base + i, gain: every === 1 ? 0.07 : 0.1, open: false });
+  };
+  if (groove === "syncopated") {
+    kick.push({ step: base, gain: 0.85 }, { step: base + 6, gain: 0.55 }, { step: base + 10, gain: 0.6 });
+    if (drumDensity > 0.55) kick.push({ step: base + 14, gain: 0.4 });
+    snare.push({ step: base + 4, gain: 0.4 }, { step: base + 12, gain: 0.4 });
+    hats(hatsEvery);
+    return true;
+  }
+  if (groove === "sync-heavy") {
+    for (let i = 0; i < 16; i += 2) kick.push({ step: base + i, gain: i === 0 || i === 6 || i === 10 ? 0.72 : 0.36 });
+    snare.push({ step: base + 4, gain: 0.46 }, { step: base + 12, gain: 0.46 });
+    hats(2);
+    return true;
+  }
+  if (groove === "one-drop") {
+    kick.push({ step: base + 8, gain: 0.82 }, { step: base + 14, gain: 0.34 });
+    snare.push({ step: base + 8, gain: 0.36 });
+    [2, 6, 10, 14].forEach((step) => hat.push({ step: base + step, gain: 0.1, open: false }));
+    return true;
+  }
+  if (groove === "ride" || groove === "shuffle") {
+    kick.push({ step: base, gain: groove === "shuffle" ? 0.7 : 0.35 }, { step: base + 10, gain: 0.28 });
+    snare.push({ step: base + 4, gain: 0.18 }, { step: base + 12, gain: 0.18 });
+    hats(2);
+    return true;
+  }
+  if (groove === "double") {
+    const hit = weight > 0.72 ? 1 : 2;
+    for (let i = 0; i < 16; i += hit) kick.push({ step: base + i, gain: hit === 1 ? 0.42 : 0.7 });
+    snare.push({ step: base + 4, gain: 0.4 }, { step: base + 12, gain: 0.4 });
+    hats(2);
+    return true;
+  }
+  if (groove === "boom-bap") {
+    kick.push({ step: base, gain: 0.9 }, { step: base + 7, gain: 0.45 }, { step: base + 10, gain: 0.55 });
+    snare.push({ step: base + 8, gain: 0.42 });
+    for (let i = 0; i < 16; i += drumDensity > 0.5 ? 2 : 4) hat.push({ step: base + i, gain: 0.09, open: false });
+    return true;
+  }
+  if (groove === "pocket") {
+    kick.push({ step: base, gain: 0.8 }, { step: base + 6, gain: 0.42 }, { step: base + 10, gain: 0.5 });
+    snare.push({ step: base + 4, gain: 0.34 }, { step: base + 12, gain: 0.34 });
+    hats(2);
+    return true;
+  }
+  if (groove === "drive") {
+    kick.push({ step: base, gain: 0.86 }, { step: base + 8, gain: 0.74 });
+    snare.push({ step: base + 4, gain: 0.48 }, { step: base + 12, gain: 0.48 });
+    hats(1);
+    return true;
+  }
+  if (groove === "train") {
+    kick.push({ step: base, gain: 0.7 }, { step: base + 8, gain: 0.62 });
+    for (let i = 4; i < 16; i += 4) snare.push({ step: base + i, gain: i % 8 === 4 ? 0.22 : 0.16 });
+    hats(2);
+    return true;
+  }
+  if (groove === "backbeat") return false;
+  return false;
+}
+
 function bassMidi(pc) {
   let midi = 36 + ((pc % 12) + 12) % 12;
   while (midi < 34) midi += 12;
@@ -505,9 +576,18 @@ function bassMidi(pc) {
   return midi;
 }
 
-function writeBass({ bass, base, spb, chord, nextChord, energy, bank, timeSignature, bassDensity, swing }) {
+function writeBass({ bass, base, spb, chord, nextChord, energy, bank, timeSignature, bassDensity, swing, bassline }) {
   const root = bassMidi(chord.pc);
   const fifth = bassMidi((chord.pc + 7) % 12);
+  if (timeSignature === "4/4" && bassline === "drop") {
+    bass.push({ step: base + 6, midi: root, dur: 4 });
+    if (energy === "full" || energy === "build") bass.push({ step: base + 12, midi: fifth, dur: 3 });
+    return;
+  }
+  if (timeSignature === "4/4" && bassline === "sync-chug") {
+    for (let i = 0; i < 16; i += 2) bass.push({ step: base + i, midi: i === 6 || i === 10 ? Math.min(55, root + 12) : root, dur: 1 });
+    return;
+  }
   if (energy === "thin" || energy === "intro" || energy === "outro") {
     bass.push({ step: base, midi: root, dur: Math.max(2, spb - 2) });
     return;
@@ -587,6 +667,11 @@ function voiceChord(chord, low, high) {
 }
 
 function writeChords({ chords, base, spb, chord, energy, local, timeSignature, timbre, drumDensity }) {
+  if (timbre.chordRhythm === "skank" && timeSignature === "4/4") {
+    const midis = voiceChord(chord, 52, 76);
+    [2, 6, 10, 14].forEach((hit) => chords.push({ step: base + hit, midis, dur: 1 }));
+    return;
+  }
   if (energy === "intro" && local % 2 === 1) return;
   const sustained = voiceChord(chord, timbre.chordTimbre === "crunch" ? 40 : 52, timbre.chordTimbre === "crunch" ? 64 : 76);
   if (energy === "thin" || energy === "intro" || energy === "outro" || energy === "bridge") {
