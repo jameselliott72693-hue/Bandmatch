@@ -2,6 +2,7 @@ import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
 import { imaginedBio, planAlbum } from "../js/band.js";
 import { compactEdit, draftFromSong, expandEdit, performSong } from "../js/edit.js";
+import { compareDrafts, forgetVersion, listVersions, saveVersion, versionKey } from "../js/versions.js";
 import { styleFor } from "../js/styles.js";
 import { zipStore } from "../js/zip.js";
 import { compactMixer, defaultMixer } from "../js/mixer.js";
@@ -574,6 +575,38 @@ if (classic.slots.singer?.name !== "Aretha Franklin" || classic.slots.guitar?.na
 if (classic.slots.bass?.id !== "bootsy-collins" || classic.slots.drums?.id !== "questlove") {
   fail("an older share link changed a musician id");
 }
+
+const versionOrigin = generateSong(fixed, "k3m9qx");
+const slowerSong = performSong(versionOrigin, { ...draftFromSong(versionOrigin), tempo: 90 });
+const fasterDraft = draftFromSong(versionOrigin);
+fasterDraft.tempo = 140;
+fasterDraft.timeSignature = "7/8";
+const fasterSong = performSong(versionOrigin, fasterDraft);
+const slowerEdit = compactEdit(slowerSong, versionOrigin);
+const fasterEdit = compactEdit(fasterSong, versionOrigin);
+const vkey = versionKey(versionOrigin.signature, versionOrigin.seed);
+let versionStore = saveVersion({}, vkey, "Slower", slowerEdit).store;
+versionStore = saveVersion(versionStore, vkey, "Slower", slowerEdit).store;
+if (listVersions(versionStore, vkey).length !== 1) fail("a version name did not replace the older copy");
+versionStore = saveVersion(versionStore, vkey, "Faster", fasterEdit).store;
+if (listVersions(versionStore, vkey).map((item) => item.name).join(",") !== "Faster,Slower") fail("versions were not listed newest first");
+const compared = compareDrafts(expandEdit(versionOrigin, slowerEdit), expandEdit(versionOrigin, fasterEdit));
+const tempoRow = compared.find((row) => row.label === "Tempo");
+const meterRow = compared.find((row) => row.label === "Meter");
+if (!tempoRow || tempoRow.same || tempoRow.left !== "90 BPM" || tempoRow.right !== "140 BPM") fail("version compare missed the tempo");
+if (!meterRow || meterRow.same) fail("version compare missed the meter");
+if (compared.some((row) => row.label.includes("\n"))) fail("version compare was not one line per row");
+versionStore = forgetVersion(versionStore, vkey, listVersions(versionStore, vkey)[0].id);
+if (listVersions(versionStore, vkey).some((item) => item.name === "Faster")) fail("version was not removed");
+const named = encodeShare(fixed, "k3m9qx", { edit: slowerEdit, versionName: "Slower" });
+const namedDecoded = decodeShare(named);
+if (namedDecoded.versionName !== "Slower" || namedDecoded.edit?.t !== 90) fail("a shared version did not keep its name and edit");
+const played = performSong(versionOrigin, expandEdit(versionOrigin, namedDecoded.edit));
+if (played.tempo !== 90) fail("a shared version did not play back at its tempo");
+if (decodeShare(encodeShare(fixed, "k3m9qx")).versionName) fail("an edit-free share grew a version name");
+let crowded = {};
+for (let n = 0; n < 14; n += 1) crowded = saveVersion(crowded, vkey, `Take ${n}`, slowerEdit).store;
+if (listVersions(crowded, vkey).length !== 12) fail("version list did not cap at 12");
 
 if (failures.length) {
   console.error(failures.join("\n"));

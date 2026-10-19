@@ -25,6 +25,7 @@ import {
   setMode,
   transposeDraft,
 } from "./edit.js";
+import { VERSIONS_KEY, compareDrafts, forgetVersion, listVersions, saveVersion, versionKey } from "./versions.js";
 import { CHANNEL_LABEL, channelOrder, partIsMuted, setPartMuted } from "./mixer.js";
 import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
@@ -47,6 +48,8 @@ const state = {
   history: [],
   future: [],
   editMarked: false,
+  versionName: "",
+  versionStore: loadVersionStore(),
   band: null,
   bandTrack: null,
   playAll: false,
@@ -96,6 +99,19 @@ function loadFavorites() {
 
 function persistFavorites() {
   localStorage.setItem(FAVORITES_KEY, JSON.stringify(state.favorites.slice(0, 30)));
+}
+
+function loadVersionStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(VERSIONS_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistVersionStore() {
+  localStorage.setItem(VERSIONS_KEY, JSON.stringify(state.versionStore));
 }
 
 function toast(message) {
@@ -450,6 +466,43 @@ function mixerMarkup(song) {
   </section>`;
 }
 
+function currentVersions() {
+  if (!state.song) return [];
+  return listVersions(state.versionStore, versionKey(state.song.signature, state.song.seed));
+}
+
+function versionsMarkup(song) {
+  const versions = currentVersions();
+  const options = [`<option value="">Original imagined song</option>`]
+    .concat(versions.map((version) => `<option value="${esc(version.id)}">${esc(version.name)}</option>`))
+    .join("");
+  const items = versions.length
+    ? versions.map((version) => `<li>
+        <strong>${esc(version.name)}</strong>
+        <button type="button" class="btn" data-version-open="${esc(version.id)}">Switch</button>
+        <button type="button" class="btn" data-version-share="${esc(version.id)}">Share</button>
+        <button type="button" class="text-btn" data-version-forget="${esc(version.id)}">Remove</button>
+      </li>`).join("")
+    : `<li class="fine">No named versions yet.</li>`;
+  const opened = state.versionName ? `<p class="fine">This sheet is the shared version “${esc(state.versionName)}”.</p>` : "";
+  return `<div class="versions">
+    <h3>Versions</h3>
+    <p class="fine">Save named copies of this edited sheet on this device. Share keeps that one edit in a link. The original imagined song stays available.</p>
+    ${opened}
+    <form class="version-form" id="version-form">
+      <label>Name <input id="version-name" maxlength="40" placeholder="Slower chorus" aria-label="Version name" required></label>
+      <button type="submit" class="btn">Save version</button>
+    </form>
+    <ul class="version-list">${items}</ul>
+    <div class="version-compare">
+      <label>Compare <select id="compare-a" aria-label="First version">${options}</select></label>
+      <label>with <select id="compare-b" aria-label="Second version">${options}</select></label>
+      <button type="button" class="btn" id="compare-versions">Compare</button>
+    </div>
+    <div id="compare-out"></div>
+  </div>`;
+}
+
 function editorMarkup(song) {
   const spellOf = (name) => (name.includes("b") ? "flat" : "sharp");
   const keyChoices = KEY_OPTIONS.map((name) => {
@@ -497,6 +550,7 @@ function editorMarkup(song) {
       </div>
     </div>
     <p class="fine">Changes play right away. Chords are written as symbols, like Am7 D G. Reset puts back the song Bandmatch first imagined for this lineup and seed.</p>
+    ${versionsMarkup(song)}
     <div class="edit-bar">
       <label>Tempo <input id="edit-tempo" type="number" min="40" max="220" value="${song.tempo}" aria-label="Tempo"></label>
       <label>Key <select id="edit-key" aria-label="Key">${keys}</select></label>
@@ -524,6 +578,7 @@ function refreshHistoryButtons() {
 
 function noteEdit() {
   if (state.editMarked || !state.song) return;
+  state.versionName = "";
   state.history.push(cloneSong(state.song));
   if (state.history.length > 30) state.history.shift();
   state.future = [];
@@ -535,6 +590,7 @@ function shareExtra(song) {
   return {
     mixer: song.mixer,
     edit: state.originSong ? compactEdit(song, state.originSong) : null,
+    versionName: state.versionName || "",
   };
 }
 
@@ -736,6 +792,110 @@ function bindEditor() {
       noteEdit();
       applyDraft(draft, true);
     });
+  });
+  bindVersions();
+}
+
+function draftForEdit(edit) {
+  return expandEdit(state.originSong, edit || null);
+}
+
+function openVersion(edit, name) {
+  if (!state.originSong) return;
+  const song = performSong(state.originSong, draftForEdit(edit));
+  song.mixer = state.song?.mixer || song.mixer;
+  state.versionName = name || "";
+  state.history = [];
+  state.future = [];
+  installSong(song);
+  setHash(song);
+  toast(name ? `Switched to ${name}.` : "Back to the original imagined song.");
+}
+
+async function copyText(link, message) {
+  try {
+    await navigator.clipboard.writeText(link);
+    toast(message);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = link;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+    toast(message);
+  }
+}
+
+function bindVersions() {
+  const form = document.querySelector("#version-form");
+  if (!form || !state.song) return;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = document.querySelector("#version-name").value;
+    const edit = state.originSong ? compactEdit(state.song, state.originSong) : null;
+    const key = versionKey(state.song.signature, state.song.seed);
+    const result = saveVersion(state.versionStore, key, name, edit);
+    if (result.error) {
+      toast(result.error);
+      return;
+    }
+    state.versionStore = result.store;
+    state.versionName = result.version.name;
+    try {
+      persistVersionStore();
+    } catch {
+      toast("This browser couldn't store that version.");
+      return;
+    }
+    setHash(state.song);
+    renderSong();
+    toast(`Saved version ${result.version.name}.`);
+  });
+  document.querySelectorAll("[data-version-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const version = currentVersions().find((item) => item.id === button.dataset.versionOpen);
+      if (version) openVersion(version.edit, version.name);
+    });
+  });
+  document.querySelectorAll("[data-version-share]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const version = currentVersions().find((item) => item.id === button.dataset.versionShare);
+      if (!version || !state.song) return;
+      const encoded = encodeShare(state.song.slots, state.song.seed, {
+        mixer: state.song.mixer,
+        edit: version.edit,
+        versionName: version.name,
+      });
+      const link = `${location.origin}${location.pathname}${location.search}#bm=${encoded}`;
+      copyText(link, `Link copied for ${version.name}.`);
+    });
+  });
+  document.querySelectorAll("[data-version-forget]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = versionKey(state.song.signature, state.song.seed);
+      state.versionStore = forgetVersion(state.versionStore, key, button.dataset.versionForget);
+      try {
+        persistVersionStore();
+      } catch {
+        toast("This browser couldn't update versions.");
+      }
+      renderSong();
+    });
+  });
+  document.querySelector("#compare-versions")?.addEventListener("click", () => {
+    const versions = currentVersions();
+    const pick = (id) => (id ? versions.find((item) => item.id === id)?.edit || null : null);
+    const left = draftForEdit(pick(document.querySelector("#compare-a").value));
+    const right = draftForEdit(pick(document.querySelector("#compare-b").value));
+    const rows = compareDrafts(left, right);
+    const out = document.querySelector("#compare-out");
+    out.innerHTML = `<table class="compare-table">
+      <thead><tr><th></th><th>${esc(document.querySelector("#compare-a").selectedOptions[0].textContent)}</th><th>${esc(document.querySelector("#compare-b").selectedOptions[0].textContent)}</th></tr></thead>
+      <tbody>
+        ${rows.map((row) => `<tr class="${row.same ? "" : "is-different"}"><th>${esc(row.label)}</th><td>${esc(row.left)}</td><td>${esc(row.right)}</td></tr>`).join("")}
+      </tbody>
+    </table>`;
   });
 }
 
@@ -957,6 +1117,7 @@ function imagine(forcedSeed) {
   }
   player.stop();
   state.playAll = false;
+  state.versionName = "";
   state.band = null;
   state.bandTrack = null;
   if (bandSection) {
@@ -1091,6 +1252,7 @@ function applyShared(encoded) {
   state.history = [];
   state.future = [];
   state.editMarked = false;
+  state.versionName = decoded.versionName || "";
   let sharedEdit = decoded.edit;
   if (!sharedEdit && decoded.editHash) {
     try {
