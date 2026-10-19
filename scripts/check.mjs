@@ -6,6 +6,7 @@ import { styleFor } from "../js/styles.js";
 import { zipStore } from "../js/zip.js";
 import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
+import { TRANSITION_MS, liveKicker, nextTrack } from "../js/set.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
 
 const feelOk = {
@@ -574,6 +575,10 @@ if (classic.slots.singer?.name !== "Aretha Franklin" || classic.slots.guitar?.na
 if (classic.slots.bass?.id !== "bootsy-collins" || classic.slots.drums?.id !== "questlove") {
   fail("an older share link changed a musician id");
 }
+
+if (TRANSITION_MS < 2000 || TRANSITION_MS > 5000) fail(`transition is ${TRANSITION_MS}ms`);
+if (nextTrack(0, 4) !== 1 || nextTrack(2, 3) !== null || nextTrack(3, 4) !== null) fail("live set order");
+if (liveKicker(false) !== "Now playing" || liveKicker(true) !== "Between songs") fail("live set label");
 
 if (failures.length) {
   console.error(failures.join("\n"));

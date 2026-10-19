@@ -28,6 +28,7 @@ import {
 import { CHANNEL_LABEL, channelOrder, partIsMuted, setPartMuted } from "./mixer.js";
 import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
+import { TRANSITION_MS, liveKicker, nextTrack } from "./set.js";
 import { zipStore } from "./zip.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
@@ -50,6 +51,10 @@ const state = {
   band: null,
   bandTrack: null,
   playAll: false,
+  liveSet: false,
+  between: false,
+  crowd: false,
+  transitionTimer: 0,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -956,6 +961,7 @@ function imagine(forcedSeed) {
     return;
   }
   player.stop();
+  leaveLiveSet(false);
   state.playAll = false;
   state.band = null;
   state.bandTrack = null;
@@ -1155,6 +1161,10 @@ player.onState((playing) => {
     button.classList.toggle("is-playing", playing);
   });
   document.querySelector("#player")?.classList.toggle("is-playing", playing);
+  if (!playing && state.liveSet && state.band && !state.between && player.position >= player.duration - 0.05) {
+    beginTransition();
+    return;
+  }
   if (!playing && state.playAll && state.band && player.position >= player.duration - 0.05) {
     const next = (state.bandTrack ?? 0) + 1;
     if (next < state.band.tracks.length) openTrack(next, true);
@@ -1171,6 +1181,10 @@ player.onProgress((time, index) => {
   const label = formatClock(time);
   const now = document.querySelector("#time-now");
   if (now) now.textContent = label;
+  const liveClock = document.querySelector("#live-clock");
+  if (liveClock && !state.between) liveClock.textContent = label;
+  const liveFill = document.querySelector("#live-fill");
+  if (liveFill && !state.between) liveFill.style.width = `${ratio * 100}%`;
   const miniTime = document.querySelector("#mini-time");
   if (miniTime) miniTime.textContent = label;
   document.querySelectorAll("[data-section]").forEach((el) => {
@@ -1295,8 +1309,97 @@ function writeBandHash() {
   history.replaceState(null, "", `#band=${bandCode(state.band)}${track}`);
 }
 
+function leaveLiveSet(stopPlayer = true) {
+  window.clearTimeout(state.transitionTimer);
+  state.transitionTimer = 0;
+  state.liveSet = false;
+  state.between = false;
+  state.nextIndex = null;
+  player.setCrowd(false);
+  if (stopPlayer) player.stop();
+  const section = document.querySelector("#live-section");
+  if (section) {
+    section.hidden = true;
+    section.innerHTML = "";
+  }
+}
+
+function startLiveSet() {
+  if (!state.band?.tracks?.length) return;
+  state.liveSet = true;
+  state.playAll = false;
+  state.between = false;
+  state.nextIndex = null;
+  player.setCrowd(state.crowd);
+  openTrack(state.bandTrack ?? 0, true);
+  renderLive();
+  document.querySelector("#live-set")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
+function beginTransition() {
+  if (!state.liveSet || !state.band) return;
+  const next = nextTrack(state.bandTrack ?? 0, state.band.tracks.length);
+  state.between = true;
+  state.nextIndex = next;
+  renderLive();
+  window.clearTimeout(state.transitionTimer);
+  state.transitionTimer = window.setTimeout(() => {
+    state.between = false;
+    if (!state.liveSet || !state.band) return;
+    if (next == null) {
+      leaveLiveSet(true);
+      toast("End of the imagined set.");
+      return;
+    }
+    openTrack(next, true);
+    renderLive();
+  }, TRANSITION_MS);
+}
+
+function renderLive() {
+  const section = document.querySelector("#live-section");
+  if (!section || !state.liveSet || !state.band) {
+    if (section) {
+      section.hidden = true;
+      section.innerHTML = "";
+    }
+    return;
+  }
+  const album = state.band;
+  const index = state.bandTrack ?? 0;
+  const track = album.tracks[index];
+  const upcoming = Number.isInteger(state.nextIndex) ? album.tracks[state.nextIndex] : null;
+  const title = state.between ? (upcoming ? upcoming.title : "End of the set") : track?.title;
+  const detail = state.between
+    ? (upcoming ? `Next · ${index + 2} of ${album.tracks.length}` : "That was the last song")
+    : `${index + 1} of ${album.tracks.length} · ${track.tempo} BPM · ${track.key}`;
+  section.hidden = false;
+  section.innerHTML = `<div class="live-set" id="live-set">
+    <p class="ethics"><strong>Imagined concert.</strong> Not a real show. No voices, no real lyrics, and the crowd is synthesized noise, not a recording.</p>
+    <p class="eyebrow">${esc(album.bandName)}</p>
+    <p class="eyebrow" id="live-kicker">${esc(liveKicker(state.between))}</p>
+    <h2>${esc(title || "")}</h2>
+    <p id="live-detail">${esc(detail)}</p>
+    <p id="live-clock">${state.between ? "Break" : esc(formatClock(player.currentTime()))}</p>
+    <div class="live-meter" aria-hidden="true"><span id="live-fill"></span></div>
+    <div class="live-actions">
+      <button type="button" class="btn${state.crowd ? " is-on" : ""}" id="live-crowd" aria-pressed="${state.crowd}">Crowd ambience</button>
+      <button type="button" class="btn" id="live-leave">Leave the set</button>
+    </div>
+  </div>`;
+  document.querySelector("#live-crowd").addEventListener("click", () => {
+    state.crowd = !state.crowd;
+    player.setCrowd(state.crowd);
+    const button = document.querySelector("#live-crowd");
+    button.setAttribute("aria-pressed", String(state.crowd));
+    button.classList.toggle("is-on", state.crowd);
+  });
+  document.querySelector("#live-leave").addEventListener("click", () => leaveLiveSet(true));
+}
+
 function openBand(slots, seed, track) {
   player.stop();
+  leaveLiveSet(false);
   state.playAll = false;
   const album = planAlbum(snapshot(slots), seed);
   state.band = album;
@@ -1381,6 +1484,7 @@ function renderBand() {
       </div>
       <div class="band-actions">
         <button type="button" class="btn btn-primary" id="play-all">Play all</button>
+        <button type="button" class="btn" id="start-live">Live set</button>
         <button type="button" class="btn" id="copy-band">Copy link</button>
         <button type="button" class="btn" id="download-album">Download album ZIP</button>
         <button type="button" class="btn" id="close-band">Back to the lineup</button>
@@ -1391,9 +1495,11 @@ function renderBand() {
   drawMark(document.querySelector("#band-logo"), song);
   drawCover(document.querySelector("#album-cover"), { ...song, title: album.albumTitle });
   document.querySelector("#play-all").addEventListener("click", () => {
+    leaveLiveSet(false);
     state.playAll = true;
     openTrack(0, true);
   });
+  document.querySelector("#start-live").addEventListener("click", startLiveSet);
   document.querySelector("#copy-band").addEventListener("click", copyBandLink);
   document.querySelector("#download-album").addEventListener("click", downloadAlbum);
   document.querySelector("#download-album-cover").addEventListener("click", () => {
@@ -1404,6 +1510,7 @@ function renderBand() {
   document.querySelector("#close-band").addEventListener("click", () => {
     state.playAll = false;
     player.stop();
+    leaveLiveSet(false);
     state.band = null;
     state.bandTrack = null;
     bandSection.hidden = true;
