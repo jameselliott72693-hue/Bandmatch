@@ -7,7 +7,9 @@ import {
   createCustomMusician,
   roleLabel,
 } from "./musicians.js";
-import { createPlayer } from "./player.js";
+import { drawCover } from "./cover.js";
+import { songToMidi } from "./midi.js";
+import { createPlayer, encodeWav } from "./player.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature } from "./song.js";
 
 const FAVORITES_KEY = "bandmatch.v1.favorites";
@@ -21,7 +23,7 @@ const state = {
   swapFrom: null,
   song: null,
   favorites: loadFavorites(),
-  mutes: { drums: false, bass: false, chords: false, lead: false },
+  mutes: { drums: false, bass: false, chords: false, lead: false, horns: false, dj: false, strings: false },
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -111,8 +113,8 @@ function updateChrome() {
   imagineEl.disabled = count < 2;
   imagineEl.textContent = stale ? "Imagine again" : "Imagine a song";
   hintEl.textContent = count < 2
-    ? `${count} of 5 chairs filled. Add at least 2. Keys is optional.`
-    : `${count} of 5 chairs filled. Keys is optional.`;
+    ? `${count} of 8 chairs filled. Add at least 2. Keys, Horns, DJ, and Strings are optional.`
+    : `${count} of 8 chairs filled. Keys, Horns, DJ, and Strings are optional.`;
   const banner = document.querySelector("#stale");
   if (banner) banner.hidden = !stale;
   const play = document.querySelector("#play");
@@ -133,10 +135,11 @@ function renderSlots() {
   slotsEl.innerHTML = ROLE_IDS.map((role) => {
     const person = state.slots[role];
     const selected = state.selected === role;
-    const emptyHint = role === "keys" ? "Optional" : "Open chair";
+    const optional = role === "keys" || role === "horns" || role === "dj" || role === "strings";
+    const emptyHint = optional ? "Optional" : "Open chair";
     const body = person
       ? `<strong>${esc(person.name)}</strong><span>${esc(person.genres.map((genre) => GENRE_LABEL[genre]).join(" · "))}</span>`
-      : `<strong>${emptyHint}</strong><span>${role === "keys" ? "Leave this empty if you want" : "Pick someone from the pool"}</span>`;
+      : `<strong>${emptyHint}</strong><span>${optional ? (role === "dj" ? "Turntables. Leave empty if you want" : "Leave this empty if you want") : "Pick someone from the pool"}</span>`;
     const actions = person
       ? `<div class="slot-actions">
           <button type="button" data-swap="${role}" aria-label="Swap ${esc(person.name)}">${swap === role ? "Cancel" : "Swap"}</button>
@@ -145,7 +148,7 @@ function renderSlots() {
       : "";
     return `<article class="slot${selected ? " is-selected" : ""}${person ? " is-filled" : ""}" data-slot="${role}">
       <button type="button" class="slot-select" data-select="${role}" aria-pressed="${selected}">
-        <span class="slot-kicker"><span>${esc(ROLE_LABEL[role])}</span>${role === "keys" ? "<em>Optional</em>" : ""}</span>
+        <span class="slot-kicker"><span>${esc(ROLE_LABEL[role])}</span>${optional ? "<em>Optional</em>" : ""}</span>
         <span class="slot-body">${body}</span>
       </button>
       ${actions}
@@ -249,13 +252,30 @@ function renderSong() {
     const left = duration ? (section.startTime / duration) * 100 : 0;
     return `<button type="button" class="marker" style="left:${left}%" data-seek-section="${section.index}" data-section="${section.index}" aria-label="Jump to ${esc(section.name)}"></button>`;
   }).join("");
+  const parts = [
+    ["drums", "Drums"],
+    ["bass", "Bass"],
+    ["chords", "Chords"],
+    ["lead", "Lead"],
+  ];
+  if (song.roster.some((entry) => entry.role === "horns")) parts.push(["horns", "Horns"]);
+  if (song.roster.some((entry) => entry.role === "dj")) parts.push(["dj", "DJ"]);
+  if (song.roster.some((entry) => entry.role === "strings")) parts.push(["strings", "Strings"]);
   songSection.innerHTML = `
     <div class="sheet" id="song-sheet">
-      <p class="eyebrow">Imagined band</p>
-      <p class="band-name">${esc(song.bandName)}</p>
-      <h2 id="song-title" tabindex="-1">${esc(song.title)}</h2>
-      <p class="genre">${esc(song.genreLabel)}</p>
-      <p class="pocket">${esc(song.pocket)}</p>
+      <div class="sheet-hero">
+        <div>
+          <p class="eyebrow">Imagined band</p>
+          <p class="band-name">${esc(song.bandName)}</p>
+          <h2 id="song-title" tabindex="-1">${esc(song.title)}</h2>
+          <p class="genre">${esc(song.genreLabel)}</p>
+          <p class="pocket">${esc(song.pocket)}</p>
+        </div>
+        <figure class="cover">
+          <canvas id="cover" width="800" height="800" aria-label="Imagined album cover for ${esc(song.title)}"></canvas>
+          <button type="button" class="btn" id="download-cover">Download cover</button>
+        </figure>
+      </div>
       <p id="stale" class="banner" ${isStale() ? "" : "hidden"}>The lineup changed. Imagine again to match this group. Playback stays off until you do.</p>
       <dl class="meta">
         <div><dt>Tempo</dt><dd>${song.tempo} BPM</dd></div>
@@ -291,6 +311,8 @@ function renderSong() {
         <button type="button" class="btn" id="reroll">Reroll</button>
         <button type="button" class="btn" id="save">Save on this device</button>
         <button type="button" class="btn" id="share">Copy share link</button>
+        <button type="button" class="btn" id="download-midi">Download MIDI</button>
+        <button type="button" class="btn" id="download-wav">Download WAV</button>
       </div>
     </div>
     <div class="player" id="player">
@@ -298,7 +320,7 @@ function renderSong() {
         <div>
           <p class="eyebrow">Demo</p>
           <h3>Play the arrangement</h3>
-          <p class="fine">The full song: drums, bass, chords, and a lead melody standing in for the vocal. No singing voice and no imitation of a real artist.</p>
+          <p class="fine">The full song, synthesized in the browser. The lead stands in for the vocal. Horns, turntables, and strings play only when someone sits in that chair. No singing voice and no imitation of a real artist.</p>
         </div>
         <canvas id="meter" width="280" height="36" aria-hidden="true"></canvas>
       </div>
@@ -319,9 +341,8 @@ function renderSong() {
         <span class="transport-meta">${song.tempo} BPM · ${esc(song.key)} · ${esc(song.timeSignature)}</span>
       </div>
       <div class="mutes" role="group" aria-label="Mute parts">
-        ${["drums", "bass", "chords", "lead"].map((part) => {
+        ${parts.map(([part, label]) => {
           const on = !state.mutes[part];
-          const label = part === "lead" ? "Lead" : part[0].toUpperCase() + part.slice(1);
           return `<button type="button" class="mute${on ? " is-on" : ""}" data-mute="${part}" aria-pressed="${on}">${label}</button>`;
         }).join("")}
       </div>
@@ -329,10 +350,14 @@ function renderSong() {
     </div>`;
   player.load(song.arrangement);
   player.attachMeter(document.querySelector("#meter"));
+  drawCover(document.querySelector("#cover"), song);
   document.querySelector("#play").disabled = isStale();
   document.querySelector("#reroll").addEventListener("click", () => imagine(makeSeed()));
   document.querySelector("#save").addEventListener("click", saveSong);
   document.querySelector("#share").addEventListener("click", shareSong);
+  document.querySelector("#download-cover").addEventListener("click", downloadCover);
+  document.querySelector("#download-midi").addEventListener("click", downloadMidi);
+  document.querySelector("#download-wav").addEventListener("click", downloadWav);
   document.querySelector("#play").addEventListener("click", () => {
     player.play().catch(() => toast("This browser couldn't start audio."));
   });
@@ -451,7 +476,7 @@ function clearLineup() {
 }
 
 function shuffleLineup() {
-  const count = 3 + Math.floor(Math.random() * 3);
+  const count = 3 + Math.floor(Math.random() * 6);
   const roles = ROLE_IDS.slice();
   for (let i = roles.length - 1; i > 0; i -= 1) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -496,7 +521,7 @@ function imagine(forcedSeed) {
     return;
   }
   player.stop();
-  state.mutes = { drums: false, bass: false, chords: false, lead: false };
+  state.mutes = { drums: false, bass: false, chords: false, lead: false, horns: false, dj: false, strings: false };
   Object.keys(state.mutes).forEach((part) => player.setMute(part, false));
   const song = generateSong(slots, seed);
   state.song = song;
@@ -506,6 +531,61 @@ function imagine(forcedSeed) {
   setHash(song);
   document.querySelector("#song-title")?.focus({ preventScroll: true });
   document.querySelector("#song-sheet")?.scrollIntoView({ block: "start" });
+}
+
+function fileStem(song) {
+  const stem = `${song.bandName} - ${song.title}`.replace(/[^\w\s.-]+/g, "").trim().replace(/\s+/g, " ");
+  return stem || "bandmatch";
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function downloadCover() {
+  const canvas = document.querySelector("#cover");
+  if (!canvas || !state.song) return;
+  canvas.toBlob((blob) => {
+    if (!blob) {
+      toast("The cover could not be saved.");
+      return;
+    }
+    downloadBlob(blob, `${fileStem(state.song)}.png`);
+  }, "image/png");
+}
+
+function downloadMidi() {
+  if (!state.song) return;
+  const bytes = songToMidi(state.song);
+  downloadBlob(new Blob([bytes], { type: "audio/midi" }), `${fileStem(state.song)}.mid`);
+}
+
+async function downloadWav() {
+  if (!state.song || isStale()) return;
+  const button = document.querySelector("#download-wav");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Rendering WAV…";
+  }
+  try {
+    const audio = await player.renderOffline();
+    downloadBlob(encodeWav(audio), `${fileStem(state.song)}.wav`);
+    toast("WAV ready.");
+  } catch {
+    toast("This browser couldn't render the WAV.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Download WAV";
+    }
+  }
 }
 
 function saveSong() {

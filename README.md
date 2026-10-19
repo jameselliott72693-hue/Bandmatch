@@ -18,12 +18,13 @@ Open the URL it prints, usually [http://localhost:8000](http://localhost:8000). 
 
 ## What v1 does
 
-- Fill 2 to 5 chairs: Singer, Guitar, Bass, Drums, and optional Keys. One person per chair. Swap or remove from the chair, or replace them from the pool.
-- Browse a starter pool of well-known musicians across rock, soul and R&B, jazz, funk, metal, pop, hip-hop, country, and punk. Search by name and filter by role.
+- Fill 2 to 8 chairs: Singer, Guitar, Bass, Drums, and optional Keys, Horns, DJ, and Strings. One person per chair. Swap or remove from the chair, or replace them from the pool.
+- Browse a starter pool of well-known musicians across rock, soul and R&B, jazz, funk, metal, pop, hip-hop, country, punk, electronic, and classical. Search by name and filter by role.
 - Add a custom player with a name, a role, and general style traits.
 - **Imagine a song.** The same lineup and seed always produce the same sheet: band name, title, genre blend, tempo, key, meter, full structure, chords, a contrasting bridge, liner notes, and original lyrics lined up with each section.
 - **Reroll** picks a new seed.
-- **Play** the full arrangement, about two to four minutes: drums, bass, chords, and a lead melody standing in for the vocal. Mute any part. A progress bar marks each section, you can jump to a section, and you can loop the section under the playhead. Nothing is sung.
+- **Play** the full arrangement, about two to four minutes: drums, bass, chords, and a lead melody standing in for the vocal. Horns, turntables, and strings are synthesized only when that chair is filled. Mute any part. A progress bar marks each section, you can jump to a section, and you can loop the section under the playhead. Nothing is sung.
+- Each song gets a procedural album cover from the seed and genre. Download it as a PNG, download a MIDI file with one track per part, or render the arrangement to a WAV in the browser.
 - Save favorite songs in this browser. Copy a share link that encodes the lineup and seed in the URL.
 
 An optional check of the generator (not required to run the app):
@@ -34,9 +35,6 @@ node scripts/check.mjs
 
 ## Roadmap
 
-- More chairs, such as horns or DJ
-- MIDI export
-- A richer band-name studio and an album-art generator
 - Optional AI music generation behind a server, using original voices only
 - Community sharing
 

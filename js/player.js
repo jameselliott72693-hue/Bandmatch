@@ -24,6 +24,12 @@ function compileEvents(arrangement) {
   arrangement.bass.forEach((note) => events.push({ kind: "bass", time: note.time, seconds: note.seconds, midi: note.midi }));
   arrangement.chords.forEach((note) => events.push({ kind: "chord", time: note.time, seconds: note.seconds, midis: note.midis }));
   arrangement.lead.forEach((note) => events.push({ kind: "lead", time: note.time, seconds: note.seconds, midi: note.midi }));
+  (arrangement.horns || []).forEach((note) => events.push({ kind: "horn", time: note.time, seconds: note.seconds, midis: note.midis }));
+  (arrangement.strings || []).forEach((note) => events.push({ kind: "string", time: note.time, seconds: note.seconds, midis: note.midis }));
+  (arrangement.dj || []).forEach((hit) => {
+    if (hit.kind === "scratch") events.push({ kind: "scratch", time: hit.time, seconds: hit.seconds, gain: hit.gain });
+    else events.push({ kind: "sub", time: hit.time, seconds: hit.seconds, midi: hit.midi, gain: hit.gain });
+  });
   events.sort((a, b) => a.time - b.time);
   return events;
 }
@@ -252,7 +258,10 @@ export function createPlayer() {
       compressor.connect(this.analyser);
       this.analyser.connect(ctx.destination);
 
-      ["drums", "bass", "chords", "lead"].forEach((part) => {
+      ["drums", "bass", "chords", "lead", "horns", "dj", "strings"].forEach((part) => {
+        const optional = part === "horns" || part === "dj" || part === "strings";
+        const key = part === "strings" ? "strings" : part;
+        if (optional && !(this.arrangement?.[key] || []).length) return;
         const gain = ctx.createGain();
         gain.gain.value = this.mutes[part] ? 0.0001 : 1;
         gain.connect(master);
@@ -264,6 +273,18 @@ export function createPlayer() {
       this.chordIn = this.coloredBus(this.partGain.chords, 900 + (this.arrangement?.brightness ?? 0.5) * 2200, false);
       this.leadIn = this.coloredBus(this.partGain.lead, 700 + (this.arrangement?.brightness ?? 0.5) * 3800, false);
       this.drumIn = this.partGain.drums;
+      this.hornIn = this.partGain.horns ? this.bandBus(this.partGain.horns, 900 + (this.arrangement?.brightness ?? 0.5) * 900) : null;
+      this.djIn = this.partGain.dj || null;
+      this.stringIn = this.partGain.strings ? this.coloredBus(this.partGain.strings, 1400 + (this.arrangement?.brightness ?? 0.5) * 1800, false) : null;
+    },
+
+    bandBus(destination, center) {
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = center;
+      filter.Q.value = 0.9;
+      filter.connect(destination);
+      return filter;
     },
 
     coloredBus(destination, cutoff, shape) {
@@ -306,8 +327,8 @@ export function createPlayer() {
       this.emitProgress(songNow);
     },
 
-    playEvent(event) {
-      const when = Math.max(this.ctx.currentTime, this.origin + event.time);
+    playEvent(event, explicitWhen) {
+      const when = explicitWhen != null ? explicitWhen : Math.max(this.ctx.currentTime, this.origin + event.time);
       const song = this.arrangement;
       if (event.kind === "kick") this.kick(when, event.gain);
       else if (event.kind === "snare") this.snare(when, event.gain);
@@ -315,16 +336,96 @@ export function createPlayer() {
       else if (event.kind === "bass") this.bass(when, event.midi, event.seconds, song.bassTimbre);
       else if (event.kind === "chord") this.chord(when, event.midis, event.seconds, song.chordTimbre, song.brightness);
       else if (event.kind === "lead") this.lead(when, event.midi, event.seconds, song.brightness);
+      else if (event.kind === "horn") event.midis.forEach((midi) => this.horn(when, midi, event.seconds, song.brightness));
+      else if (event.kind === "string") event.midis.forEach((midi) => this.stringNote(when, midi, event.seconds, song.brightness));
+      else if (event.kind === "scratch") this.scratch(when, event.seconds, event.gain);
+      else if (event.kind === "sub") this.sub(when, event.midi, event.seconds, event.gain);
+    },
+
+    async renderOffline() {
+      if (!this.arrangement) throw new Error("Nothing to render.");
+      if (this.playing) {
+        this.haltTransport(true);
+        this.stateHandler(false);
+      }
+      const backup = {
+        ctx: this.ctx,
+        noise: this.noise,
+        partGain: this.partGain,
+        drumIn: this.drumIn,
+        bassIn: this.bassIn,
+        chordIn: this.chordIn,
+        leadIn: this.leadIn,
+        hornIn: this.hornIn,
+        djIn: this.djIn,
+        stringIn: this.stringIn,
+        sources: this.sources,
+        offlineLimit: this.offlineLimit,
+      };
+      const Ctx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+      if (!Ctx) throw new Error("This browser cannot render audio.");
+      try {
+        const sampleRate = 44100;
+        const chunk = 12;
+        const preroll = 4.5;
+        const totalFrames = Math.ceil((this.duration + 0.45) * sampleRate);
+        const holder = new Ctx(2, Math.max(1, totalFrames), sampleRate);
+        const buffer = holder.createBuffer(2, totalFrames, sampleRate);
+        const mix = [buffer.getChannelData(0), buffer.getChannelData(1)];
+        for (let start = 0; start < this.duration - 0.0001; start += chunk) {
+          const keep = Math.min(chunk, this.duration - start);
+          const last = start + keep >= this.duration - 0.001;
+          const windowStart = Math.max(0, start - preroll);
+          const windowEnd = start + keep;
+          const renderDur = windowEnd - windowStart + (last ? 0.45 : 0.08);
+          this.ctx = new Ctx(2, Math.ceil(renderDur * sampleRate), sampleRate);
+          this.sources = [];
+          this.offlineLimit = renderDur - 0.02;
+          this.buildGraph();
+          this.events.forEach((event) => {
+            if (event.time < windowStart || event.time >= windowEnd) return;
+            this.playEvent(event, event.time - windowStart);
+          });
+          const audio = await this.ctx.startRendering();
+          const offset = Math.round((start - windowStart) * sampleRate);
+          const dest = Math.round(start * sampleRate);
+          const copyFrames = Math.min(
+            Math.round((last ? keep + 0.45 : keep) * sampleRate),
+            totalFrames - dest,
+            Math.max(0, audio.length - offset),
+          );
+          for (let channel = 0; channel < mix.length; channel += 1) {
+            mix[channel].set(audio.getChannelData(Math.min(channel, audio.numberOfChannels - 1)).subarray(offset, offset + copyFrames), dest);
+          }
+        }
+        return buffer;
+      } finally {
+        this.ctx = backup.ctx;
+        this.noise = backup.noise;
+        this.partGain = backup.partGain;
+        this.drumIn = backup.drumIn;
+        this.bassIn = backup.bassIn;
+        this.chordIn = backup.chordIn;
+        this.leadIn = backup.leadIn;
+        this.hornIn = backup.hornIn;
+        this.djIn = backup.djIn;
+        this.stringIn = backup.stringIn;
+        this.sources = backup.sources;
+        this.offlineLimit = backup.offlineLimit;
+      }
     },
 
     track(node, startAt, stopAt) {
+      const limit = this.offlineLimit || Infinity;
+      if (startAt >= limit) return;
+      const stop = stopAt ? Math.min(stopAt, limit) : undefined;
       this.sources.push(node);
       node.onended = () => {
         const index = this.sources.indexOf(node);
         if (index >= 0) this.sources.splice(index, 1);
       };
       node.start(startAt);
-      if (stopAt) node.stop(stopAt);
+      if (stop) node.stop(stop);
     },
 
     kick(time, gain) {
@@ -511,6 +612,89 @@ export function createPlayer() {
       this.track(lfo, time, stopAt);
     },
 
+    horn(time, midi, seconds, brightness) {
+      if (!this.hornIn) return;
+      const ctx = this.ctx;
+      const freq = midiToFreq(midi);
+      const osc = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc2.type = "square";
+      osc.frequency.setValueAtTime(freq, time);
+      osc2.frequency.setValueAtTime(freq * 1.004, time);
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.setValueAtTime(700, time);
+      filter.frequency.exponentialRampToValueAtTime(1400 + brightness * 800, time + 0.08);
+      filter.Q.value = 0.8;
+      const amp = envGain(ctx, time, 0.08, 0.02, Math.max(0.04, seconds * 0.5), 0.08);
+      const amp2 = envGain(ctx, time, 0.03, 0.02, Math.max(0.03, seconds * 0.4), 0.06);
+      osc.connect(amp);
+      osc2.connect(amp2);
+      amp.connect(filter);
+      amp2.connect(filter);
+      filter.connect(this.hornIn);
+      const stopAt = time + seconds + 0.1;
+      this.track(osc, time, stopAt);
+      this.track(osc2, time, stopAt);
+    },
+
+    stringNote(time, midi, seconds, brightness) {
+      if (!this.stringIn) return;
+      const ctx = this.ctx;
+      const freq = midiToFreq(midi);
+      const osc = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc2.type = "triangle";
+      osc.frequency.setValueAtTime(freq, time);
+      osc2.frequency.setValueAtTime(freq * 1.006, time);
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 900 + brightness * 1600;
+      const amp = envGain(ctx, time, 0.045, 0.08, Math.max(0.08, seconds * 0.62), 0.2);
+      const amp2 = envGain(ctx, time, 0.02, 0.09, Math.max(0.06, seconds * 0.5), 0.18);
+      osc.connect(amp);
+      osc2.connect(amp2);
+      amp.connect(filter);
+      amp2.connect(filter);
+      filter.connect(this.stringIn);
+      const stopAt = time + seconds + 0.22;
+      this.track(osc, time, stopAt);
+      this.track(osc2, time, stopAt);
+    },
+
+    scratch(time, seconds, gain) {
+      if (!this.djIn) return;
+      const ctx = this.ctx;
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.noise;
+      noise.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.Q.value = 4;
+      filter.frequency.setValueAtTime(420, time);
+      filter.frequency.exponentialRampToValueAtTime(2800, time + Math.max(0.05, seconds * 0.55));
+      filter.frequency.exponentialRampToValueAtTime(700, time + Math.max(0.08, seconds));
+      const amp = envGain(ctx, time, 0.22 * (gain || 0.4), 0.005, Math.max(0.02, seconds * 0.35), 0.05);
+      noise.connect(filter);
+      filter.connect(amp);
+      amp.connect(this.djIn);
+      this.track(noise, time, time + seconds + 0.06);
+    },
+
+    sub(time, midi, seconds, gain) {
+      if (!this.djIn) return;
+      const ctx = this.ctx;
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(midiToFreq(midi), time);
+      const amp = envGain(ctx, time, 0.34 * (gain || 0.6), 0.005, Math.max(0.04, seconds * 0.5), 0.08);
+      osc.connect(amp);
+      amp.connect(this.djIn);
+      this.track(osc, time, time + seconds + 0.08);
+    },
+
     animateMeter() {
       const draw = () => {
         if (!this.playing) return;
@@ -555,4 +739,41 @@ g.fillStyle = live ? "#ff6a45" : "rgba(243,230,214,0.18)";
     },
   };
   return player;
+}
+
+export function encodeWav(buffer) {
+  const channels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const samples = buffer.length;
+  const blockAlign = channels * 2;
+  const dataSize = samples * blockAlign;
+  const out = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(out);
+  const write = (offset, text) => {
+    for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  write(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  write(8, "WAVE");
+  write(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  write(36, "data");
+  view.setUint32(40, dataSize, true);
+  const data = [];
+  for (let channel = 0; channel < channels; channel += 1) data.push(buffer.getChannelData(channel));
+  let offset = 44;
+  for (let i = 0; i < samples; i += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      const sample = Math.max(-1, Math.min(1, data[channel][i]));
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+      offset += 2;
+    }
+  }
+  return new Blob([out], { type: "audio/wav" });
 }
