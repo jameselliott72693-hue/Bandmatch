@@ -227,6 +227,11 @@ function renderFavorites() {
   `).join("");
 }
 
+function formatClock(seconds) {
+  const rounded = Math.max(0, Math.round(seconds || 0));
+  return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
+}
+
 function renderSong() {
   const song = state.song;
   if (!song) {
@@ -234,15 +239,16 @@ function renderSong() {
     return;
   }
   songSection.hidden = false;
-  const lyrics = `
-    <div class="lyric-block">
-      <h3>Verse</h3>
-      ${song.lyrics.verse.map((line) => `<p>${esc(line)}</p>`).join("")}
-    </div>
-    <div class="lyric-block">
-      <h3>Chorus</h3>
-      ${song.lyrics.chorus.map((line) => `<p>${esc(line)}</p>`).join("")}
-    </div>`;
+  const duration = song.duration || song.arrangement.duration;
+  const lyrics = song.structure.filter((section) => section.lines?.length).map((section) => `
+    <div class="lyric-block" data-section="${section.index}">
+      <h3>${esc(section.name)}</h3>
+      ${section.lines.map((line) => `<p>${esc(line)}</p>`).join("")}
+    </div>`).join("");
+  const markers = song.structure.map((section) => {
+    const left = duration ? (section.startTime / duration) * 100 : 0;
+    return `<button type="button" class="marker" style="left:${left}%" data-seek-section="${section.index}" data-section="${section.index}" aria-label="Jump to ${esc(section.name)}"></button>`;
+  }).join("");
   songSection.innerHTML = `
     <div class="sheet" id="song-sheet">
       <p class="eyebrow">Imagined band</p>
@@ -255,21 +261,26 @@ function renderSong() {
         <div><dt>Tempo</dt><dd>${song.tempo} BPM</dd></div>
         <div><dt>Key</dt><dd>${esc(song.key)}</dd></div>
         <div><dt>Meter</dt><dd>${esc(song.timeSignature)}</dd></div>
+        <div><dt>Length</dt><dd>${esc(song.durationLabel)}</dd></div>
         <div><dt>Seed</dt><dd><code>${esc(song.seed)}</code></dd></div>
       </dl>
       <div class="roster">
         ${song.roster.map((entry) => `<span><em>${esc(ROLE_LABEL[entry.role])}</em> ${esc(entry.name)}</span>`).join("")}
       </div>
-      <h3>Structure <span>${song.bars} bars on the sheet</span></h3>
-      <ol class="sections">
-        ${song.structure.map((section) => `<li><strong>${esc(section.name)}</strong><span>${section.bars}</span></li>`).join("")}
-      </ol>
-      <h3>Chord progression <span>${esc(song.loopLabel)} in the demo</span></h3>
+      <h3>Structure <span>${esc(song.durationLabel)} · ${song.bars} bars</span></h3>
+      <div class="sections">
+        ${song.structure.map((section) => `<button type="button" data-seek-section="${section.index}" data-section="${section.index}"><strong>${esc(section.name)}</strong><span>${section.bars}</span></button>`).join("")}
+      </div>
+      <h3>Chord progression</h3>
       <div class="chords">
         ${song.progression.map((chord) => `<span>${esc(chord.symbol)}</span>`).join("")}
       </div>
+      <h3>Bridge progression</h3>
+      <div class="chords">
+        ${song.bridge.map((chord) => `<span>${esc(chord.symbol)}</span>`).join("")}
+      </div>
       <h3>Original lyrics</h3>
-      <p class="fine">Built from an original phrase bank. Not taken from real songs, and not sung in the demo.</p>
+      <p class="fine">Each block lines up with a section. Built from an original phrase bank, not taken from real songs, and not sung.</p>
       <div class="lyrics">${lyrics}</div>
       <h3>Liner notes</h3>
       <p class="fine">Parts are imagined. The singer's chair is a melody only — the demo uses a synthesizer, not a voice, and the named artists are not involved.</p>
@@ -287,13 +298,24 @@ function renderSong() {
         <div>
           <p class="eyebrow">Demo</p>
           <h3>Play the arrangement</h3>
-          <p class="fine">Drums, bass, chords, and a lead melody standing in for the vocal. No singing voice and no imitation of a real artist.</p>
+          <p class="fine">The full song: drums, bass, chords, and a lead melody standing in for the vocal. No singing voice and no imitation of a real artist.</p>
         </div>
         <canvas id="meter" width="280" height="36" aria-hidden="true"></canvas>
+      </div>
+      <div class="timeline">
+        <div class="timeline-times">
+          <span id="time-now">0:00</span>
+          <span>${esc(song.durationLabel)}</span>
+        </div>
+        <div class="timeline-bar" id="timeline" role="slider" tabindex="0" aria-label="Song position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0:00">
+          <span class="timeline-fill" id="timeline-fill"></span>
+          ${markers}
+        </div>
       </div>
       <div class="transport">
         <button type="button" class="btn btn-primary" id="play">Play</button>
         <button type="button" class="btn" id="stop">Stop</button>
+        <label class="check loop-toggle"><input type="checkbox" id="loop-section"> Loop section</label>
         <span class="transport-meta">${song.tempo} BPM · ${esc(song.key)} · ${esc(song.timeSignature)}</span>
       </div>
       <div class="mutes" role="group" aria-label="Mute parts">
@@ -303,7 +325,7 @@ function renderSong() {
           return `<button type="button" class="mute${on ? " is-on" : ""}" data-mute="${part}" aria-pressed="${on}">${label}</button>`;
         }).join("")}
       </div>
-      <p class="fine">Lead is a synthesizer melody, not a vocal. Empty chairs are filled by a generic part shaped by the rest of the lineup.</p>
+      <p class="fine">Click the bar or a section to jump. Loop section repeats whichever section the playhead is in. Lead is a synthesizer, not a vocal. Empty chairs still get a generic part shaped by the lineup.</p>
     </div>`;
   player.load(song.arrangement);
   player.attachMeter(document.querySelector("#meter"));
@@ -315,6 +337,16 @@ function renderSong() {
     player.play().catch(() => toast("This browser couldn't start audio."));
   });
   document.querySelector("#stop").addEventListener("click", () => player.stop());
+  document.querySelector("#loop-section").addEventListener("change", (event) => {
+    player.setLoopSection(event.target.checked);
+  });
+  document.querySelectorAll("[data-seek-section]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      player.seekSection(Number(button.dataset.seekSection));
+    });
+  });
+  bindScrub(document.querySelector("#timeline"));
   document.querySelectorAll("[data-mute]").forEach((button) => {
     button.addEventListener("click", () => {
       const part = button.dataset.mute;
@@ -323,6 +355,37 @@ function renderSong() {
       button.classList.toggle("is-on", !state.mutes[part]);
       button.setAttribute("aria-pressed", String(!state.mutes[part]));
     });
+  });
+}
+
+function bindScrub(el) {
+  if (!el) return;
+  const scrub = (clientX) => {
+    if (!state.song) return;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width) return;
+    player.seekRatio((clientX - rect.left) / rect.width);
+  };
+  el.addEventListener("click", (event) => {
+    if (event.target.closest("[data-seek-section]")) return;
+    scrub(event.clientX);
+  });
+  el.addEventListener("keydown", (event) => {
+    const duration = state.song?.duration || 1;
+    const current = player.currentTime() / duration;
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      player.seekRatio(current + 5 / duration);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      player.seekRatio(current - 5 / duration);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      player.seekRatio(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      player.seekRatio(1);
+    }
   });
 }
 
@@ -554,6 +617,26 @@ player.onState((playing) => {
   document.querySelector("#player")?.classList.toggle("is-playing", playing);
 });
 
+player.onProgress((time, index) => {
+  const duration = state.song?.duration || player.duration || 1;
+  const ratio = Math.max(0, Math.min(1, duration ? time / duration : 0));
+  document.querySelectorAll("#timeline-fill, #mini-fill").forEach((el) => {
+    el.style.width = `${ratio * 100}%`;
+  });
+  const label = formatClock(time);
+  const now = document.querySelector("#time-now");
+  if (now) now.textContent = label;
+  const miniTime = document.querySelector("#mini-time");
+  if (miniTime) miniTime.textContent = label;
+  document.querySelectorAll("[data-section]").forEach((el) => {
+    el.classList.toggle("is-current", Number(el.dataset.section) === index);
+  });
+  document.querySelectorAll("#timeline, #mini-timeline").forEach((el) => {
+    el.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
+    el.setAttribute("aria-valuetext", label);
+  });
+});
+
 slotsEl.addEventListener("click", (event) => {
   const remove = event.target.closest("[data-remove]");
   const swap = event.target.closest("[data-swap]");
@@ -639,6 +722,7 @@ document.querySelector("#mini-play").addEventListener("click", () => {
   else player.play().catch(() => toast("This browser couldn't start audio."));
 });
 document.querySelector("#mini-stop").addEventListener("click", () => player.stop());
+bindScrub(document.querySelector("#mini-timeline"));
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== " " || event.repeat) return;
