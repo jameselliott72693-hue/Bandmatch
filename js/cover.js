@@ -115,3 +115,34 @@ export function drawCover(canvas, song) {
   ctx.fillText("Imagined original", 56, size - 42);
   return canvas;
 }
+
+export function drawMark(canvas, song) {
+  const ctx = canvas.getContext("2d");
+  const size = 800;
+  canvas.width = size;
+  canvas.height = size;
+  const genre = song.genres?.[0] || "default";
+  const palette = PALETTES[genre] || PALETTES[song.bank] || PALETTES.default;
+  ctx.fillStyle = palette[0];
+  ctx.fillRect(0, 0, size, size);
+  ctx.strokeStyle = palette[1];
+  ctx.lineWidth = 16;
+  ctx.strokeRect(46, 46, size - 92, size - 92);
+  const initials = String(song.bandName || "Band")
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word[0] || "")
+    .join("")
+    .toUpperCase();
+  ctx.fillStyle = palette[2];
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "560 260px Fraunces, serif";
+  ctx.fillText(initials || "BM", size / 2, size / 2 - 10);
+  ctx.font = "500 34px Outfit, sans-serif";
+  ctx.fillStyle = palette[1];
+  ctx.fillText("IMAGINED GROUP", size / 2, size - 120);
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+  return canvas;
+}

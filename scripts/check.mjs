@@ -1,7 +1,9 @@
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
+import { imaginedBio, planAlbum } from "../js/band.js";
 import { compactEdit, draftFromSong, expandEdit, performSong } from "../js/edit.js";
 import { styleFor } from "../js/styles.js";
+import { zipStore } from "../js/zip.js";
 import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
@@ -478,6 +480,26 @@ for (const id of profileIds) {
 
 if (mediumDecoded.edit?.t !== 88) fail("medium edit did not round-trip");
 if (!mediumDecoded.edit.S || mediumDecoded.edit.S.length !== 8) fail("medium edit dropped sections");
+
+const album = planAlbum(fixed, "k3m9qx");
+const albumAgain = planAlbum(fixed, "k3m9qx");
+if (album.tracks.length < 3 || album.tracks.length > 6) fail(`album has ${album.tracks.length} tracks`);
+if (album.tracks.map((track) => track.title).join("|") !== albumAgain.tracks.map((track) => track.title).join("|")) {
+  fail("album seeds were not deterministic");
+}
+if (album.tracks[0].seed !== "k3m9qx") fail("album should open with the band seed");
+const bio = imaginedBio(album);
+if (!bio.startsWith("Imagined bio")) fail("band bio is not labeled as imagined");
+if (!bio.includes(album.bandName)) fail("band bio is missing the band name");
+const packed = zipStore([
+  { name: "notes.txt", data: new TextEncoder().encode("imagined") },
+  { name: "second.txt", data: new TextEncoder().encode("room") },
+]);
+if (packed[0] !== 0x50 || packed[1] !== 0x4b) fail("zip is missing its header");
+const zipText = new TextDecoder().decode(packed);
+if (!zipText.includes("notes.txt") || !zipText.includes("imagined") || !zipText.includes("second.txt")) {
+  fail("zip is missing a stored file");
+}
 
 if (failures.length) {
   console.error(failures.join("\n"));

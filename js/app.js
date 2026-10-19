@@ -7,7 +7,8 @@ import {
   createCustomMusician,
   roleLabel,
 } from "./musicians.js";
-import { drawCover } from "./cover.js";
+import { imaginedBio, planAlbum } from "./band.js";
+import { drawCover, drawMark } from "./cover.js";
 import {
   KEY_OPTIONS,
   SECTION_ROLES,
@@ -27,6 +28,7 @@ import {
 import { CHANNEL_LABEL, channelOrder, partIsMuted, setPartMuted } from "./mixer.js";
 import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
+import { zipStore } from "./zip.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
 const FAVORITES_KEY = "bandmatch.v1.favorites";
@@ -45,6 +47,9 @@ const state = {
   history: [],
   future: [],
   editMarked: false,
+  band: null,
+  bandTrack: null,
+  playAll: false,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -53,6 +58,7 @@ const searchEl = document.querySelector("#search");
 const imagineEl = document.querySelector("#imagine");
 const hintEl = document.querySelector("#lineup-hint");
 const songSection = document.querySelector("#song-section");
+const bandSection = document.querySelector("#band-section");
 const favoritesEl = document.querySelector("#favorites");
 const dialog = document.querySelector("#custom-dialog");
 const toastEl = document.querySelector("#toast");
@@ -336,6 +342,7 @@ function renderSong() {
         <button type="button" class="btn" id="share">Copy share link</button>
         <button type="button" class="btn" id="download-midi">Download MIDI</button>
         <button type="button" class="btn" id="download-wav">Download WAV</button>
+        <button type="button" class="btn" id="open-band">Band page</button>
       </div>
     </div>
     <div class="player" id="player">
@@ -383,10 +390,14 @@ function renderSong() {
   document.querySelector("#download-cover").addEventListener("click", downloadCover);
   document.querySelector("#download-midi").addEventListener("click", downloadMidi);
   document.querySelector("#download-wav").addEventListener("click", downloadWav);
+  document.querySelector("#open-band").addEventListener("click", () => openBand(song.slots, song.seed, null));
   document.querySelector("#play").addEventListener("click", () => {
     player.play().catch(() => toast("This browser couldn't start audio."));
   });
-  document.querySelector("#stop").addEventListener("click", () => player.stop());
+  document.querySelector("#stop").addEventListener("click", () => {
+    state.playAll = false;
+    player.stop();
+  });
   document.querySelector("#loop-section").addEventListener("change", (event) => {
     player.setLoopSection(event.target.checked);
   });
@@ -930,7 +941,8 @@ function setHash(song) {
       /* the lineup link still works without the edit stash */
     }
   }
-  history.replaceState(null, "", `#bm=${encoded}`);
+  if (state.band) writeBandHash();
+  else history.replaceState(null, "", `#bm=${encoded}`);
   return encoded;
 }
 
@@ -944,6 +956,13 @@ function imagine(forcedSeed) {
     return;
   }
   player.stop();
+  state.playAll = false;
+  state.band = null;
+  state.bandTrack = null;
+  if (bandSection) {
+    bandSection.hidden = true;
+    bandSection.innerHTML = "";
+  }
   state.mutes = { drums: false, bass: false, chords: false, lead: false, horns: false, dj: false, strings: false };
   Object.keys(state.mutes).forEach((part) => player.setMute(part, false));
   const song = generateSong(slots, seed);
@@ -1136,6 +1155,11 @@ player.onState((playing) => {
     button.classList.toggle("is-playing", playing);
   });
   document.querySelector("#player")?.classList.toggle("is-playing", playing);
+  if (!playing && state.playAll && state.band && player.position >= player.duration - 0.05) {
+    const next = (state.bandTrack ?? 0) + 1;
+    if (next < state.band.tracks.length) openTrack(next, true);
+    else state.playAll = false;
+  }
 });
 
 player.onProgress((time, index) => {
@@ -1242,7 +1266,10 @@ document.querySelector("#mini-play").addEventListener("click", () => {
   if (player.playing) player.stop();
   else player.play().catch(() => toast("This browser couldn't start audio."));
 });
-document.querySelector("#mini-stop").addEventListener("click", () => player.stop());
+document.querySelector("#mini-stop").addEventListener("click", () => {
+  state.playAll = false;
+  player.stop();
+});
 bindScrub(document.querySelector("#mini-timeline"));
 
 document.addEventListener("keydown", (event) => {
@@ -1258,17 +1285,224 @@ document.addEventListener("keydown", (event) => {
 
 window.addEventListener("resize", updateChrome);
 
-const shared = location.hash.match(/(?:^#|[?&])bm=([^&]+)/);
-if (shared) {
-  try {
-    applyShared(decodeURIComponent(shared[1]));
-  } catch {
-    render();
-    toast("That share link could not be read.");
+function bandCode(album) {
+  return encodeShare(album.tracks[0].slots, album.seed);
+}
+
+function writeBandHash() {
+  if (!state.band) return;
+  const track = Number.isInteger(state.bandTrack) ? `&t=${state.bandTrack}` : "";
+  history.replaceState(null, "", `#band=${bandCode(state.band)}${track}`);
+}
+
+function openBand(slots, seed, track) {
+  player.stop();
+  state.playAll = false;
+  const album = planAlbum(snapshot(slots), seed);
+  state.band = album;
+  const index = Number.isInteger(track) && album.tracks[track] ? track : null;
+  state.bandTrack = index;
+  state.slots = snapshot(album.tracks[0].slots);
+  if (index == null) {
+    state.song = null;
+    songSection.hidden = true;
+    player.load(null);
+  } else {
+    const song = album.tracks[index];
+    state.song = song;
+    state.originSong = cloneSong(song);
+    state.history = [];
+    state.future = [];
+    state.editMarked = false;
   }
-} else {
+  const first = ROLE_IDS.find((role) => state.slots[role]) || "singer";
+  state.selected = first;
+  state.roleFilter = first;
+  writeBandHash();
+  render();
+  renderBand();
+  if (index != null) renderSong();
+  document.querySelector("#band-page")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
+function openTrack(index, autoplay) {
+  if (!state.band?.tracks[index]) return;
+  state.bandTrack = index;
+  const song = state.band.tracks[index];
+  state.song = song;
+  state.originSong = cloneSong(song);
+  state.history = [];
+  state.future = [];
+  state.editMarked = false;
+  writeBandHash();
+  renderBand();
+  renderSong();
+  if (autoplay && !isStale()) player.play().catch(() => toast("This browser couldn't start audio."));
+  document.querySelector("#song-title")?.focus({ preventScroll: true });
+}
+
+function renderBand() {
+  const album = state.band;
+  if (!album) {
+    bandSection.hidden = true;
+    bandSection.innerHTML = "";
+    return;
+  }
+  bandSection.hidden = false;
+  const song = album.tracks[0];
+  const tracks = album.tracks.map((track, index) => `
+    <li class="${index === state.bandTrack ? "is-current" : ""}">
+      <button type="button" data-track="${index}"><strong>${index + 1}. ${esc(track.title)}</strong><span>${track.tempo} BPM · ${esc(track.key)} · ${esc(track.durationLabel)}</span></button>
+      <button type="button" data-track-midi="${index}">MIDI</button>
+    </li>`).join("");
+  bandSection.innerHTML = `
+    <div class="band-page" id="band-page">
+      <p class="ethics"><strong>Imagined and original.</strong> This supergroup is not a real band. Named artists are not involved. Bandmatch never imitates a real voice and never uses real lyrics or melodies.</p>
+      <div class="band-hero">
+        <figure class="cover">
+          <canvas id="band-logo" width="800" height="800" aria-label="Imagined logo for ${esc(album.bandName)}"></canvas>
+          <figcaption>Logo</figcaption>
+        </figure>
+        <div>
+          <p class="eyebrow">Imagined supergroup</p>
+          <h2>${esc(album.bandName)}</h2>
+          <p class="genre">${esc(song.genreLabel)}</p>
+          <p class="blend">${esc(song.blend || "")}</p>
+          <div class="roster">
+            ${song.roster.map((entry) => `<span><em>${esc(ROLE_LABEL[entry.role])}</em> ${esc(entry.name)}</span>`).join("")}
+          </div>
+          <h3>${esc(album.albumTitle)}</h3>
+          <p>${esc(imaginedBio(album))}</p>
+        </div>
+        <figure class="cover">
+          <canvas id="album-cover" width="800" height="800" aria-label="Imagined album cover for ${esc(album.albumTitle)}"></canvas>
+          <button type="button" class="btn" id="download-album-cover">Download album cover</button>
+        </figure>
+      </div>
+      <div class="band-actions">
+        <button type="button" class="btn btn-primary" id="play-all">Play all</button>
+        <button type="button" class="btn" id="copy-band">Copy link</button>
+        <button type="button" class="btn" id="download-album">Download album ZIP</button>
+        <button type="button" class="btn" id="close-band">Back to the lineup</button>
+      </div>
+      <p class="fine" id="album-status">The ZIP is built in the browser: one WAV and one MIDI for each track. It can take a while.</p>
+      <ol class="tracklist">${tracks}</ol>
+    </div>`;
+  drawMark(document.querySelector("#band-logo"), song);
+  drawCover(document.querySelector("#album-cover"), { ...song, title: album.albumTitle });
+  document.querySelector("#play-all").addEventListener("click", () => {
+    state.playAll = true;
+    openTrack(0, true);
+  });
+  document.querySelector("#copy-band").addEventListener("click", copyBandLink);
+  document.querySelector("#download-album").addEventListener("click", downloadAlbum);
+  document.querySelector("#download-album-cover").addEventListener("click", () => {
+    document.querySelector("#album-cover").toBlob((blob) => {
+      if (blob) downloadBlob(blob, `${fileStem({ bandName: album.bandName, title: album.albumTitle })}.png`);
+    }, "image/png");
+  });
+  document.querySelector("#close-band").addEventListener("click", () => {
+    state.playAll = false;
+    player.stop();
+    state.band = null;
+    state.bandTrack = null;
+    bandSection.hidden = true;
+    bandSection.innerHTML = "";
+    history.replaceState(null, "", location.pathname + location.search);
+  });
+  document.querySelectorAll("[data-track]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.playAll = false;
+      openTrack(Number(button.dataset.track), false);
+    });
+  });
+  document.querySelectorAll("[data-track-midi]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const track = album.tracks[Number(button.dataset.trackMidi)];
+      downloadBlob(new Blob([songToMidi(track)], { type: "audio/midi" }), `${fileStem(track)}.mid`);
+    });
+  });
+}
+
+async function copyBandLink() {
+  if (!state.band) return;
+  writeBandHash();
+  const link = `${location.origin}${location.pathname}${location.search}${location.hash}`;
+  try {
+    await navigator.clipboard.writeText(link);
+    toast("Band link copied.");
+  } catch {
+    toast(link);
+  }
+}
+
+async function downloadAlbum() {
+  const album = state.band;
+  const button = document.querySelector("#download-album");
+  const status = document.querySelector("#album-status");
+  if (!album || !button) return;
+  state.playAll = false;
+  player.stop();
+  button.disabled = true;
+  const files = [];
+  try {
+    for (let index = 0; index < album.tracks.length; index += 1) {
+      const track = album.tracks[index];
+      if (status) status.textContent = `Rendering track ${index + 1} of ${album.tracks.length}…`;
+      player.load(track.arrangement);
+      player.setMixer(track.mixer);
+      const audio = await player.renderOffline();
+      const wav = new Uint8Array(await encodeWav(audio).arrayBuffer());
+      const stem = `${String(index + 1).padStart(2, "0")} ${fileStem(track)}`;
+      files.push({ name: `${stem}.wav`, data: wav });
+      files.push({ name: `${stem}.mid`, data: songToMidi(track) });
+    }
+    downloadBlob(new Blob([zipStore(files)], { type: "application/zip" }), `${fileStem({ bandName: album.bandName, title: album.albumTitle })}.zip`);
+    if (status) status.textContent = "Album ZIP ready.";
+  } catch {
+    if (status) status.textContent = "This browser couldn't build the album ZIP. Each track can still be downloaded from its page.";
+    toast("The album ZIP could not be built.");
+  } finally {
+    button.disabled = false;
+    if (state.song) {
+      player.load(state.song.arrangement);
+      player.setMixer(state.song.mixer);
+    }
+  }
+}
+
+function readRoute() {
+  const hash = location.hash;
+  const band = hash.match(/(?:^#|[?&])band=([^&]+)/);
+  const track = hash.match(/(?:^#|&)t=(\d+)/);
+  const song = hash.match(/(?:^#|[?&])bm=([^&]+)/);
+  if (band) {
+    try {
+      const decoded = decodeShare(decodeURIComponent(band[1]));
+      const index = track ? Number(track[1]) : null;
+      openBand(decoded.slots, decoded.seed, index);
+      if (decoded.edit) {
+        /* album tracks are the imagined songs; a band link does not carry sheet edits */
+      }
+    } catch {
+      render();
+      toast("That band link could not be read.");
+    }
+    return;
+  }
+  if (song) {
+    try {
+      applyShared(decodeURIComponent(song[1]));
+    } catch {
+      render();
+      toast("That share link could not be read.");
+    }
+    return;
+  }
   render();
 }
+
+readRoute();
 
 document.querySelector("#custom-genres").innerHTML = GENRE_IDS.map((genre) => `
   <label class="check"><input type="checkbox" name="genre" value="${genre}"><span>${esc(GENRE_LABEL[genre])}</span></label>
