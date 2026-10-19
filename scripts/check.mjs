@@ -1,5 +1,6 @@
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
+import { songToMidi } from "../js/midi.js";
 import { decodeShare, encodeShare, generateSong, slotSignature } from "../js/song.js";
 
 const feelOk = {
@@ -14,7 +15,7 @@ function fail(message) {
   failures.push(message);
 }
 
-if (MUSICIANS.length < 40 || MUSICIANS.length > 45) fail(`expected about 40 musicians, found ${MUSICIANS.length}`);
+if (MUSICIANS.length < 76 || MUSICIANS.length > 88) fail(`expected about 80 musicians, found ${MUSICIANS.length}`);
 
 const ids = new Set();
 for (const person of MUSICIANS) {
@@ -231,6 +232,91 @@ if (left.title !== right.title || left.tempo !== right.tempo || left.lyrics.chor
 const banned = ["yesterday, all my", "is this the real life", "smells like teen spirit", "stairway to heaven"];
 const blob = `${left.lyrics.verse.join(" ")} ${left.lyrics.chorus.join(" ")} ${a.lyrics.verse.join(" ")}`.toLowerCase();
 for (const phrase of banned) if (blob.includes(phrase)) fail(`lyric collided with ${phrase}`);
+
+const octet = lineup({
+  singer: "aretha-franklin",
+  guitar: "nile-rodgers",
+  bass: "james-jamerson",
+  drums: "clyde-stubblefield",
+  keys: "stevie-wonder",
+});
+octet.horns = MUSICIANS.find((person) => person.id === "miles-davis");
+octet.dj = MUSICIANS.find((person) => person.id === "j-dilla");
+octet.strings = MUSICIANS.find((person) => person.id === "yo-yo-ma");
+const wide = generateSong(octet, "octet1");
+const wideAgain = generateSong(octet, "octet1");
+if (view(wide) !== view(wideAgain)) fail("full lineup was not deterministic");
+if (wide.roster.length !== 8) fail(`expected 8 chairs, found ${wide.roster.length}`);
+if (!wide.arrangement.horns.length || !wide.arrangement.dj.length || !wide.arrangement.strings.length) {
+  fail("horns, DJ, or strings did not play");
+}
+if (a.arrangement.horns.length || a.arrangement.dj.length || a.arrangement.strings.length) {
+  fail("empty extra chairs produced notes");
+}
+
+function midiTracks(bytes) {
+  if (bytes[0] !== 0x4d || bytes[1] !== 0x54 || bytes[2] !== 0x68 || bytes[3] !== 0x64) {
+    throw new Error("missing MThd");
+  }
+  const division = (bytes[12] << 8) | bytes[13];
+  const tracks = (bytes[10] << 8) | bytes[11];
+  let pos = 14;
+  const noteOns = [];
+  for (let track = 0; track < tracks; track += 1) {
+    if (bytes[pos] !== 0x4d || bytes[pos + 1] !== 0x54 || bytes[pos + 2] !== 0x72 || bytes[pos + 3] !== 0x6b) {
+      throw new Error("missing MTrk");
+    }
+    const length = (bytes[pos + 4] << 24) | (bytes[pos + 5] << 16) | (bytes[pos + 6] << 8) | bytes[pos + 7];
+    let i = pos + 8;
+    const end = i + length;
+    let running = 0;
+    let ons = 0;
+    while (i < end) {
+      let byte = 0;
+      do {
+        byte = bytes[i];
+        i += 1;
+      } while (byte & 0x80);
+      let status = bytes[i];
+      if (status < 0x80) status = running;
+      else {
+        running = status;
+        i += 1;
+      }
+      if (status === 0xff) {
+        i += 1;
+        let size = 0;
+        do {
+          byte = bytes[i];
+          i += 1;
+          size = (size << 7) | (byte & 0x7f);
+        } while (byte & 0x80);
+        i += size;
+      } else if ((status & 0xf0) === 0xc0 || (status & 0xf0) === 0xd0) i += 1;
+      else {
+        if ((status & 0xf0) === 0x90 && bytes[i + 1] > 0) ons += 1;
+        i += 2;
+      }
+    }
+    if (i !== end) throw new Error("track length mismatch");
+    noteOns.push(ons);
+    pos = end;
+  }
+  if (pos !== bytes.length) throw new Error("trailing midi bytes");
+  return { division, tracks, noteOns };
+}
+
+try {
+  const full = midiTracks(songToMidi(wide));
+  const core = midiTracks(songToMidi(a));
+  if (full.division !== 480) fail(`midi division ${full.division}`);
+  if (full.tracks !== 8) fail(`octet midi has ${full.tracks} tracks`);
+  if (core.tracks !== 5) fail(`core midi has ${core.tracks} tracks`);
+  if (full.noteOns.slice(1).some((count) => count < 1)) fail(`midi track missing notes ${full.noteOns.join(",")}`);
+  if (core.noteOns[0] !== 0) fail("tempo track should not contain notes");
+} catch (error) {
+  fail(`midi parse: ${error.message}`);
+}
 
 if (failures.length) {
   console.error(failures.join("\n"));

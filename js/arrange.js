@@ -175,6 +175,12 @@ export function arrangeFull(ctx) {
     scale: SCALES[chooseScale(ctx.bank, ctx.mode)],
     bridgeScale: ctx.mode === "minor" ? SCALES.dorian : SCALES.mixolydian,
   });
+  const horns = [];
+  const dj = [];
+  const strings = [];
+  writeHorns({ sections, spb, ctx, horns });
+  writeDj({ sections, spb, ctx, dj });
+  writeStrings({ sections, spb, ctx, strings });
 
   const stamp = (list, withDur) => {
     list.forEach((event) => {
@@ -188,6 +194,12 @@ export function arrangeFull(ctx) {
   stamp(bass, true);
   stamp(chords, true);
   stamp(lead, true);
+  stamp(horns, true);
+  stamp(strings, true);
+  dj.forEach((event) => {
+    event.time = stepTime(event.step, ctx.tempo, ctx.swing);
+    event.seconds = noteSeconds(event.step, event.dur || 1, ctx.tempo, ctx.swing);
+  });
 
   return {
     tempo: ctx.tempo,
@@ -207,7 +219,86 @@ export function arrangeFull(ctx) {
     bass,
     chords,
     lead,
+    horns,
+    dj,
+    strings,
   };
+}
+
+function writeHorns({ sections, spb, ctx, horns }) {
+  if (!ctx.byRole.horns) return;
+  const density = ctx.byRole.horns.density;
+  sections.forEach((section) => {
+    const energy = energyFor(section.role);
+    for (let local = 0; local < section.bars; local += 1) {
+      const base = section.startStep + local * spb;
+      const chord = chordFor(ctx, section.role, local, Math.floor(section.startStep / spb) + local);
+      const voice = voiceChord(chord, 58, 77).slice(0, 3);
+      if (energy === "full") {
+        [4, 12].filter((hit) => hit < spb).forEach((hit) => {
+          horns.push({ step: base + hit, midis: voice, dur: 2 });
+        });
+        if (local % 2 === 0) {
+          const midi = voice[Math.floor(ctx.rng() * voice.length)];
+          horns.push({ step: base + (density > 0.6 ? 2 : 0), midis: [midi], dur: density > 0.6 ? 3 : 6 });
+        }
+      } else if (energy === "bridge") {
+        horns.push({ step: base, midis: voice, dur: Math.max(4, spb - 2) });
+      } else if ((energy === "thin" || energy === "build") && local % 2 === 0) {
+        horns.push({ step: base, midis: [voice[0]], dur: Math.max(3, Math.floor(spb / 2)) });
+      } else if (energy === "intro" && local === section.bars - 1) {
+        horns.push({ step: base, midis: [voice[0]], dur: 4 });
+      }
+    }
+  });
+}
+
+function writeDj({ sections, spb, ctx, dj }) {
+  if (!ctx.byRole.dj) return;
+  const density = ctx.byRole.dj.density;
+  const swung = ctx.byRole.dj.swing > 0.45;
+  sections.forEach((section) => {
+    const energy = energyFor(section.role);
+    for (let local = 0; local < section.bars; local += 1) {
+      const base = section.startStep + local * spb;
+      const root = 36 + (chordFor(ctx, section.role, local, Math.floor(section.startStep / spb) + local).pc % 12);
+      dj.push({ kind: "sub", step: base, midi: root > 48 ? root - 12 : root, dur: 3, gain: energy === "full" ? 0.85 : 0.55 });
+      if (energy === "full" || energy === "build") {
+        dj.push({ kind: "scratch", step: base + (swung ? 6 : 7), dur: 2, gain: 0.55 });
+        if (density > 0.5 && spb >= 16) dj.push({ kind: "scratch", step: base + 14, dur: 1, gain: 0.4 });
+        if (ctx.rng() < density * 0.45 && spb >= 12) dj.push({ kind: "scratch", step: base + 10, dur: 1, gain: 0.32 });
+      } else if (energy === "bridge") {
+        if (local % 2 === 0) dj.push({ kind: "scratch", step: base + Math.floor(spb / 2), dur: 3, gain: 0.28 });
+      } else if (local % 2 === 0 && energy !== "outro") {
+        dj.push({ kind: "scratch", step: base + Math.min(8, spb - 2), dur: 2, gain: 0.26 });
+      }
+    }
+  });
+}
+
+function writeStrings({ sections, spb, ctx, strings }) {
+  if (!ctx.byRole.strings) return;
+  const density = ctx.byRole.strings.density;
+  sections.forEach((section) => {
+    const energy = energyFor(section.role);
+    for (let local = 0; local < section.bars; local += 1) {
+      const base = section.startStep + local * spb;
+      const chord = chordFor(ctx, section.role, local, Math.floor(section.startStep / spb) + local);
+      const high = voiceChord(chord, 60, 81);
+      if (energy === "full") {
+        const midis = high.slice(0, 3);
+        midis.push(midis[0] + 12);
+        strings.push({ step: base, midis, dur: Math.max(4, spb - 1) });
+      } else if (energy === "bridge") {
+        const midi = high[Math.floor(ctx.rng() * high.length)];
+        strings.push({ step: base, midis: [midi], dur: Math.max(4, spb - 2) });
+      } else if (energy === "outro") {
+        strings.push({ step: base, midis: high.slice(0, 2), dur: Math.max(4, spb - 1) });
+      } else if (local % 2 === 0 || density > 0.55) {
+        strings.push({ step: base, midis: high.slice(0, energy === "build" ? 3 : 2), dur: Math.max(4, spb - 2) });
+      }
+    }
+  });
 }
 
 function chordFor(ctx, role, local, absoluteBar) {

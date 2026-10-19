@@ -420,6 +420,8 @@ const BANK_OF = {
   folk: "country",
   prog: "rock",
   latin: "funk",
+  electronic: "hiphop",
+  classical: "jazz",
 };
 
 function c(off, quality) {
@@ -509,8 +511,8 @@ function sameChords(a, b) {
 
 export function generateSong(slots, seed) {
   const members = membersOf(slots);
-  if (members.length < 2 || members.length > 5) {
-    throw new Error("A song needs 2 to 5 musicians.");
+  if (members.length < 2 || members.length > 8) {
+    throw new Error("A song needs 2 to 8 musicians.");
   }
   const signature = slotSignature(slots);
   const rng = mulberry32(hashString(`${seed}::${signature}`));
@@ -794,5 +796,14 @@ export function decodeShare(encoded) {
 }
 
 export function blankSlots() {
-  return { singer: null, guitar: null, bass: null, drums: null, keys: null };
+  return {
+    singer: null,
+    guitar: null,
+    bass: null,
+    drums: null,
+    keys: null,
+    horns: null,
+    dj: null,
+    strings: null,
+  };
 }

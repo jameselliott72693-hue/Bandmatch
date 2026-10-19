@@ -332,6 +332,22 @@ select,
 
 #song-section[hidden] { display: none; }
 
+.sheet-hero {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+}
+
+.cover { margin: 0; display: grid; gap: 8px; }
+
+.cover canvas {
+  width: min(100%, 280px);
+  height: auto;
+  border-radius: 16px;
+  display: block;
+  border: 1px solid var(--line);
+}
+
 .sheet h2 {
   margin: 0;
   font-size: clamp(2.3rem, 6vw, 4.2rem);
@@ -644,6 +660,8 @@ dialog legend { padding: 0; color: var(--muted); }
 }
 
 @media (min-width: 720px) {
+  .sheet-hero { grid-template-columns: minmax(0, 1fr) 220px; }
+  .cover canvas { width: 100%; }
   .meta { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .pool { grid-template-columns: 1fr 1fr; }
   .notes { grid-template-columns: 1fr 1fr; }
