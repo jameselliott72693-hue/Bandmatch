@@ -20,7 +20,10 @@ function fail(message) {
   failures.push(message);
 }
 
-if (MUSICIANS.length < 76 || MUSICIANS.length > 88) fail(`expected about 80 musicians, found ${MUSICIANS.length}`);
+if (MUSICIANS.length !== 94) fail(`expected 94 musicians, found ${MUSICIANS.length}`);
+if (MUSICIANS[0].id !== "freddie-mercury" || MUSICIANS[79].id !== "alison-krauss") {
+  fail("existing musicians were reordered or re-keyed");
+}
 
 const ids = new Set();
 for (const person of MUSICIANS) {
@@ -499,6 +502,77 @@ if (packed[0] !== 0x50 || packed[1] !== 0x4b) fail("zip is missing its header");
 const zipText = new TextDecoder().decode(packed);
 if (!zipText.includes("notes.txt") || !zipText.includes("imagined") || !zipText.includes("second.txt")) {
   fail("zip is missing a stored file");
+}
+
+const newcomers = [
+  { id: "fred-durst", roles: ["singer"], genres: ["metal", "hip-hop", "rock"] },
+  { id: "jimmy-chamberlin", roles: ["drums"], genres: ["rock"] },
+  { id: "bono", roles: ["singer"], genres: ["rock"] },
+  { id: "david-lee-roth", roles: ["singer"], genres: ["rock"] },
+  { id: "joe-jonas", roles: ["singer"], genres: ["pop"] },
+  { id: "billy-corgan", roles: ["singer", "guitar"], genres: ["rock"] },
+  { id: "danny-carey", roles: ["drums"], genres: ["metal", "prog"] },
+  { id: "the-edge", roles: ["guitar"], genres: ["rock"] },
+  { id: "tom-scholz", roles: ["guitar", "keys"], genres: ["rock"] },
+  { id: "tom-petty", roles: ["singer", "guitar"], genres: ["rock"] },
+  { id: "brad-delp", roles: ["singer"], genres: ["rock"] },
+  { id: "wes-borland", roles: ["guitar"], genres: ["metal", "rock"] },
+  { id: "joe-satriani", roles: ["guitar"], genres: ["rock"] },
+  { id: "chuck-mangione", roles: ["horns"], genres: ["jazz"] },
+];
+for (const spec of newcomers) {
+  const person = MUSICIANS.find((item) => item.id === spec.id);
+  if (!person) {
+    fail(`missing ${spec.id}`);
+    continue;
+  }
+  if (person.roles.join(",") !== spec.roles.join(",")) fail(`${spec.id} roles ${person.roles}`);
+  if (person.genres.join(",") !== spec.genres.join(",")) fail(`${spec.id} genres ${person.genres}`);
+  for (const role of person.roles) {
+    const slots = {
+      singer: null, guitar: null, bass: null, drums: null, keys: null, horns: null, dj: null, strings: null,
+    };
+    slots[role] = person;
+    const partnerRole = role === "drums" ? "singer" : "drums";
+    slots[partnerRole] = MUSICIANS.find((item) => item.id === (partnerRole === "singer" ? "dolly-parton" : "ringo-starr"));
+    const song = generateSong(slots, `new-${spec.id}-${role}`);
+    const seated = song.roster.find((entry) => entry.role === role);
+    if (!seated || seated.name !== person.name) fail(`${person.name} was not seated on ${role}`);
+    if (!song.notes.some((note) => note.name === person.name)) fail(`${person.name} missing a liner note`);
+    if (song.arrangement.duration < 119 || song.arrangement.duration > 241) {
+      fail(`${person.name} on ${role} duration ${song.arrangement.duration.toFixed(1)}`);
+    }
+    if (!song.arrangement.kick.length || !song.arrangement.lead.length || !song.arrangement.chords.length) {
+      fail(`${person.name} on ${role} did not generate a playable arrangement`);
+    }
+    if (role === "horns" && !song.arrangement.horns.length) fail(`${person.name} horns did not play`);
+    if (role === "keys" && !song.arrangement.chords.length) fail(`${person.name} keys did not play`);
+  }
+}
+
+const progMetal = lineup({ guitar: "tony-iommi", drums: "danny-carey" });
+let oddMeters = 0;
+for (let n = 0; n < 24; n += 1) {
+  const song = generateSong(progMetal, `progmetal${n}`);
+  if (song.bank !== "metal") fail(`progressive metal bank was ${song.bank}`);
+  if (!song.genres.includes("prog") || !song.genres.includes("metal")) fail(`progressive metal genres ${song.genres}`);
+  if (song.timeSignature === "7/8") {
+    oddMeters += 1;
+    if (song.arrangement.duration < 119 || song.arrangement.duration > 241) {
+      fail(`odd-meter duration ${song.arrangement.duration.toFixed(1)}`);
+    }
+    if (!song.arrangement.kick.length) fail("odd-meter drums were empty");
+  }
+}
+if (!oddMeters) fail("progressive metal lineup never used 7/8");
+
+const classicShare = "eyJ2IjoxLCJzZWVkIjoidXl1YXJ6Iiwic2xvdHMiOnsic2luZ2VyIjp7ImlkIjoiYXJldGhhLWZyYW5rbGluIn0sImd1aXRhciI6eyJpZCI6Im5pbGUtcm9kZ2VycyJ9LCJiYXNzIjp7ImlkIjoiYm9vdHN5LWNvbGxpbnMifSwiZHJ1bXMiOnsiaWQiOiJxdWVzdGxvdmUifX19";
+const classic = decodeShare(classicShare);
+if (classic.slots.singer?.name !== "Aretha Franklin" || classic.slots.guitar?.name !== "Nile Rodgers") {
+  fail("an older share link no longer restored its musicians");
+}
+if (classic.slots.bass?.id !== "bootsy-collins" || classic.slots.drums?.id !== "questlove") {
+  fail("an older share link changed a musician id");
 }
 
 if (failures.length) {
