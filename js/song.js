@@ -1,5 +1,6 @@
 import { arrangeFull, bridgePattern, planSections } from "./arrange.js";
 import { applyCompactMix, compactMixer, defaultMixer } from "./mixer.js";
+import { packText, unpackText } from "./pack.js";
 import {
   GENRE_LABEL,
   ROLE_IDS,
@@ -429,7 +430,7 @@ function c(off, quality) {
   return { off, quality };
 }
 
-function hashString(str) {
+export function hashString(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i += 1) {
     h ^= str.charCodeAt(i);
@@ -438,7 +439,7 @@ function hashString(str) {
   return h >>> 0;
 }
 
-function mulberry32(seed) {
+export function mulberry32(seed) {
   let a = seed >>> 0;
   return function rng() {
     a |= 0;
@@ -598,6 +599,7 @@ export function generateSong(slots, seed) {
     tonic: key.pc,
   });
   const structure = withLyrics(arrangement.sections, lyrics);
+  materializeChords(structure, progression, bridge);
 
   const genreLabel = genres.map((genre) => GENRE_LABEL[genre] || genre).join(" · ");
   const keyLabel = `${key.name} ${mode}`;
@@ -691,6 +693,23 @@ function buildLyrics(mood, rng) {
   };
 }
 
+function materializeChords(structure, progression, bridge) {
+  let bar = 0;
+  structure.forEach((section) => {
+    if (section.role === "bridge") {
+      section.chords = bridge.map((chord) => ({ pc: chord.pc, quality: chord.quality }));
+    } else {
+      const chords = [];
+      for (let i = 0; i < progression.length; i += 1) {
+        const chord = progression[(bar + i) % progression.length];
+        chords.push({ pc: chord.pc, quality: chord.quality });
+      }
+      section.chords = chords;
+    }
+    bar += section.bars;
+  });
+}
+
 function withLyrics(sections, lyrics) {
   let verse = 0;
   return sections.map((section, index) => {
@@ -752,20 +771,24 @@ export function encodeShare(slots, seed, extra) {
   });
   const mix = extra?.mix || (extra?.mixer ? compactMixer(extra.mixer) : null);
   if (mix) payload.mix = mix;
-  const bytes = stringToBytes(JSON.stringify(payload));
-  let binary = "";
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  if (extra?.edit) payload.ed = extra.edit;
+  let packed = packText(JSON.stringify(payload));
+  if (packed.length > 4800 && payload.ed) {
+    const editHash = hashString(JSON.stringify(payload.ed)).toString(36);
+    delete payload.ed;
+    payload.eh = editHash;
+    packed = packText(JSON.stringify(payload));
+  }
+  return packed;
+}
+
+function readSharePayload(encoded) {
+  const unpacked = unpackText(String(encoded || ""));
+  return JSON.parse(unpacked);
 }
 
 export function decodeShare(encoded) {
-  let text = String(encoded || "").replace(/-/g, "+").replace(/_/g, "/");
-  while (text.length % 4) text += "=";
-  const binary = atob(text);
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  const payload = JSON.parse(bytesToString(bytes));
+  const payload = readSharePayload(encoded);
   if (!payload || payload.v !== 1 || typeof payload.seed !== "string" || !payload.slots) {
     throw new Error("Unrecognized share link.");
   }
@@ -797,7 +820,13 @@ export function decodeShare(encoded) {
   });
   const count = ROLE_IDS.filter((role) => slots[role]).length;
   if (count < 2) throw new Error("That lineup could not be restored.");
-  return { seed: payload.seed.slice(0, 24), slots, mix: payload.mix || null };
+  return {
+    seed: payload.seed.slice(0, 24),
+    slots,
+    mix: payload.mix || null,
+    edit: payload.ed || null,
+    editHash: payload.eh || null,
+  };
 }
 
 export function withSharedMix(song, mix) {

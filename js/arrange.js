@@ -145,7 +145,14 @@ export function arrangeFull(ctx) {
   let bar = 0;
   sections.forEach((section) => {
     for (let local = 0; local < section.bars; local += 1) {
-      const nextChord = chordFor(ctx, section.role, local + 1, bar + 1);
+      const chordAt = (localBar, absoluteBar) => {
+        if (section.chords?.length) {
+          const index = ((localBar % section.chords.length) + section.chords.length) % section.chords.length;
+          return section.chords[index];
+        }
+        return chordFor(ctx, section.role, localBar, absoluteBar);
+      };
+      const nextChord = chordAt(local + 1, bar + 1);
       writeBar({
         kick,
         snare,
@@ -154,7 +161,7 @@ export function arrangeFull(ctx) {
         chords,
         base: section.startStep + local * spb,
         spb,
-        chord: chordFor(ctx, section.role, local, bar),
+        chord: chordAt(local, bar),
         nextChord,
         role: section.role,
         energy: energyFor(section.role),
