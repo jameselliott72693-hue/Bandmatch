@@ -183,6 +183,7 @@ export function performSong(song, draft) {
     drive: song.drive,
     mode: draft.mode === "minor" ? "minor" : "major",
     tonic: ((draft.keyPc % 12) + 12) % 12,
+    style: song.style,
   });
   const structure = arrangement.sections.map((section, index) => ({
     ...section,

@@ -599,6 +599,8 @@ code {
 
 .strip-flags .mute { flex: 1; padding: 6px 8px; }
 
+.blend { margin: 8px 0; max-width: 62ch; }
+
 .player .fine { margin-top: 8px; }
 
 .editor { margin: 18px 0 8px; }

@@ -1,4 +1,5 @@
 import { arrangeFull, bridgePattern, planSections } from "./arrange.js";
+import { styleFor } from "./styles.js";
 import { applyCompactMix, compactMixer, defaultMixer } from "./mixer.js";
 import { packText, unpackText } from "./pack.js";
 import {
@@ -388,6 +389,16 @@ const BANKS = {
       [c(0, "min"), c(10, "maj"), c(5, "min"), c(0, "min")],
     ],
   },
+  reggae: {
+    major: [
+      [c(0, "maj"), c(5, "maj"), c(10, "maj"), c(7, "maj")],
+      [c(0, "maj"), c(0, "maj"), c(5, "maj"), c(3, "maj")],
+    ],
+    minor: [
+      [c(0, "min"), c(10, "maj"), c(5, "min"), c(0, "min")],
+      [c(0, "min"), c(3, "maj"), c(10, "maj"), c(0, "min")],
+    ],
+  },
   blues: {
     major: [
       [
@@ -418,6 +429,7 @@ const BANK_OF = {
   country: "country",
   punk: "punk",
   blues: "blues",
+  reggae: "reggae",
   disco: "funk",
   folk: "country",
   prog: "rock",
@@ -532,15 +544,19 @@ export function generateSong(slots, seed) {
   if (!genres.length) genres.push(ranked[0][0]);
   const primary = genres[0];
   const bank = BANK_OF[primary] || "pop";
+  const style = styleFor(genres);
 
-  const swingRaw = byRole.drums ? byRole.drums.swing * 0.7 + average(people, "swing") * 0.3 : average(people, "swing");
-  const density = average(people, "density");
+  let swingRaw = byRole.drums ? byRole.drums.swing * 0.7 + average(people, "swing") * 0.3 : average(people, "swing");
+  swingRaw = Math.max(0, Math.min(1, swingRaw * 0.72 + style.swing * 0.28));
+  let density = average(people, "density");
+  density = Math.max(0, Math.min(1, density * 0.75 + style.density * 0.25));
   const weight = average(people, "weight");
   const brightness = average(people, "brightness");
   const tonal = [byRole.guitar, byRole.bass, byRole.keys].filter(Boolean);
   const drive = tonal.length ? average(tonal, "drive") : average(people, "drive") * 0.4;
 
   let tempo = people.reduce((sum, person) => sum + (person.tempoMin + person.tempoMax) / 2, 0) / people.length;
+  tempo = tempo * 0.62 + style.tempo * 0.38;
   if (bank === "punk") tempo += 14;
   if (bank === "metal") tempo += 8;
   if (bank === "hiphop") tempo -= 8;
@@ -597,6 +613,7 @@ export function generateSong(slots, seed) {
     drive,
     mode,
     tonic: key.pc,
+    style,
   });
   const structure = withLyrics(arrangement.sections, lyrics);
   materializeChords(structure, progression, bridge);
@@ -614,6 +631,8 @@ export function generateSong(slots, seed) {
     title: pick(rng, TITLES),
     genres,
     genreLabel,
+    blend: style.sentence,
+    style,
     tempo,
     key: keyLabel,
     keyPc: key.pc,

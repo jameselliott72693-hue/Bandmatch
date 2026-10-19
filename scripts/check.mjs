@@ -1,6 +1,7 @@
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
 import { compactEdit, draftFromSong, expandEdit, performSong } from "../js/edit.js";
+import { styleFor } from "../js/styles.js";
 import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
@@ -409,6 +410,72 @@ const medium = {
 };
 const mediumPacked = encodeShare(fixed, "k3m9qx", { edit: medium });
 const mediumDecoded = decodeShare(mediumPacked);
+if (!a.blend || !a.blend.endsWith(".")) fail("song sheet is missing the blend sentence");
+const funkMetal = lineup({});
+funkMetal.guitar = createCustomMusician({
+  name: "Riff Guest",
+  role: "guitar",
+  genres: ["funk", "metal"],
+  tempo: "medium",
+  feel: "straight",
+  densityId: "busy",
+  weightId: "heavy",
+  tone: "driven",
+});
+funkMetal.drums = createCustomMusician({
+  name: "Pocket Guest",
+  role: "drums",
+  genres: ["metal", "funk"],
+  tempo: "medium",
+  feel: "straight",
+  densityId: "busy",
+  weightId: "heavy",
+  tone: "driven",
+});
+const hybrid = generateSong(funkMetal, "fmblend");
+if (hybrid.style.groove !== "sync-heavy") fail(`funk-metal groove ${hybrid.style.groove}`);
+if (!hybrid.blend.toLowerCase().includes("funk") || !hybrid.blend.toLowerCase().includes("metal")) {
+  fail(`blend sentence missed a genre: ${hybrid.blend}`);
+}
+const chorus = hybrid.structure.find((section) => section.role === "chorus");
+const chorusKicks = hybrid.arrangement.kick.filter((event) => event.step >= chorus.startStep && event.step < chorus.startStep + hybrid.arrangement.sixteenthsPerBar);
+if (!chorusKicks.some((event) => (event.step - chorus.startStep) % 16 === 6)) fail("funk-metal chorus lost the syncopated kick");
+if (chorusKicks.length < 4) fail(`funk-metal chorus is not heavy enough (${chorusKicks.length} kicks)`);
+const reggaeSlots = lineup({});
+reggaeSlots.bass = createCustomMusician({
+  name: "Drop Guest",
+  role: "bass",
+  genres: ["reggae"],
+  tempo: "slow",
+  feel: "straight",
+  densityId: "sparse",
+  weightId: "medium",
+  tone: "warm",
+});
+reggaeSlots.guitar = createCustomMusician({
+  name: "Skank Guest",
+  role: "guitar",
+  genres: ["reggae"],
+  tempo: "slow",
+  feel: "straight",
+  densityId: "sparse",
+  weightId: "light",
+  tone: "clean",
+});
+const reggaeSong = generateSong(reggaeSlots, "onedrop");
+if (reggaeSong.style.groove !== "one-drop" || reggaeSong.style.comp !== "skank") {
+  fail(`reggae profile ${reggaeSong.style.groove}/${reggaeSong.style.comp}`);
+}
+const reggaeBar = reggaeSong.arrangement.bass.filter((event) => event.step < reggaeSong.arrangement.sixteenthsPerBar);
+if (reggaeBar.some((event) => event.step === 0)) fail("reggae bass landed on the downbeat");
+const skank = reggaeSong.arrangement.chords.filter((event) => event.step < reggaeSong.arrangement.sixteenthsPerBar);
+if (!skank.length || skank.some((event) => event.step % 4 === 0)) fail("reggae chords are not an offbeat skank");
+const profileIds = ["rock", "funk", "soul", "r&b", "jazz", "metal", "punk", "pop", "hip-hop", "country", "blues", "reggae"];
+for (const id of profileIds) {
+  const profile = styleFor([id]);
+  if (!profile.groove || !profile.bass || !profile.comp || !profile.sentence) fail(`profile ${id} is incomplete`);
+}
+
 if (mediumDecoded.edit?.t !== 88) fail("medium edit did not round-trip");
 if (!mediumDecoded.edit.S || mediumDecoded.edit.S.length !== 8) fail("medium edit dropped sections");
 

@@ -25,6 +25,7 @@ export const GENRE_LABEL = {
   country: "Country",
   punk: "Punk",
   blues: "Blues",
+  reggae: "Reggae",
   disco: "Disco",
   folk: "Folk",
   prog: "Prog",
