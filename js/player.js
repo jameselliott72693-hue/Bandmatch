@@ -4,16 +4,28 @@ function midiToFreq(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
 }
 
-function gridOffsets(count, tempo, swing) {
-  const step = 60 / tempo / 4;
-  const ratio = 0.5 + Math.max(0, Math.min(1, swing)) * 0.17;
-  const offsets = new Array(count);
-  for (let i = 0; i < count; i += 1) {
-    const pair = Math.floor(i / 2);
-    const start = pair * step * 2;
-    offsets[i] = i % 2 === 0 ? start : start + step * 2 * ratio;
+function lowerBound(events, time) {
+  let lo = 0;
+  let hi = events.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (events[mid].time < time) lo = mid + 1;
+    else hi = mid;
   }
-  return { offsets, loopDur: count * step, step };
+  return lo;
+}
+
+function compileEvents(arrangement) {
+  if (!arrangement) return [];
+  const events = [];
+  arrangement.kick.forEach((hit) => events.push({ kind: "kick", time: hit.time, gain: hit.gain }));
+  arrangement.snare.forEach((hit) => events.push({ kind: "snare", time: hit.time, gain: hit.gain }));
+  arrangement.hat.forEach((hit) => events.push({ kind: "hat", time: hit.time, gain: hit.gain, open: hit.open }));
+  arrangement.bass.forEach((note) => events.push({ kind: "bass", time: note.time, seconds: note.seconds, midi: note.midi }));
+  arrangement.chords.forEach((note) => events.push({ kind: "chord", time: note.time, seconds: note.seconds, midis: note.midis }));
+  arrangement.lead.forEach((note) => events.push({ kind: "lead", time: note.time, seconds: note.seconds, midi: note.midi }));
+  events.sort((a, b) => a.time - b.time);
+  return events;
 }
 
 function envGain(ctx, time, peak, attack, hold, release) {
@@ -60,15 +72,35 @@ export function createPlayer() {
     meter: null,
     meterFrame: 0,
     playing: false,
+    position: 0,
+    duration: 0,
+    events: [],
+    cursor: 0,
+    origin: 0,
+    looping: false,
+    loopIndex: 0,
     stateHandler: () => {},
+    progressHandler: () => {},
     noise: null,
 
     onState(handler) {
       this.stateHandler = handler;
     },
 
+    onProgress(handler) {
+      this.progressHandler = handler;
+    },
+
     load(arrangement) {
+      this.haltTransport(false);
       this.arrangement = arrangement;
+      this.events = compileEvents(arrangement);
+      this.duration = arrangement?.duration || 0;
+      this.position = 0;
+      this.cursor = 0;
+      this.looping = false;
+      this.loopIndex = 0;
+      this.progressHandler(0, 0);
     },
 
     attachMeter(canvas) {
@@ -85,8 +117,10 @@ export function createPlayer() {
     },
 
     async play() {
-      if (!this.arrangement) return;
-      this.stop();
+      if (!this.arrangement || this.playing) return;
+      const resumeAt = this.position >= this.duration - 0.08 ? 0 : this.position;
+      this.position = resumeAt;
+      this.token += 1;
       const token = this.token;
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) throw new Error("This browser cannot start audio.");
@@ -104,20 +138,46 @@ export function createPlayer() {
       this.buildGraph();
       await this.ctx.resume();
       if (token !== this.token) return;
-      const timing = gridOffsets(this.arrangement.loopSteps, this.arrangement.tempo, this.arrangement.swing);
-      this.timing = timing;
-      this.nextLoop = this.ctx.currentTime + 0.08;
+      this.origin = this.ctx.currentTime + 0.06 - this.position;
+      this.cursor = lowerBound(this.events, this.position);
       this.playing = true;
       this.stateHandler(true);
+      this.emitProgress(this.position);
       this.pump(token);
-      this.timer = window.setInterval(() => this.pump(token), 25);
+      this.timer = window.setInterval(() => this.pump(token), 40);
       this.animateMeter();
     },
 
     stop() {
+      const was = this.playing;
+      this.haltTransport(false);
+      this.position = 0;
+      this.cursor = 0;
+      if (was) this.stateHandler(false);
+      this.emitProgress(0);
+    },
+
+    finish() {
+      const end = this.duration;
+      this.haltTransport(false);
+      this.position = end;
+      this.stateHandler(false);
+      this.emitProgress(end);
+    },
+
+    haltTransport(keepPosition) {
       this.token += 1;
       if (this.timer) window.clearInterval(this.timer);
       this.timer = 0;
+      this.haltSources();
+      this.playing = false;
+      if (!keepPosition) this.position = this.position;
+      if (this.meterFrame) cancelAnimationFrame(this.meterFrame);
+      this.meterFrame = 0;
+      this.drawMeter(false);
+    },
+
+    haltSources() {
       this.sources.forEach((source) => {
         try {
           source.stop();
@@ -126,12 +186,53 @@ export function createPlayer() {
         }
       });
       this.sources = [];
-      const was = this.playing;
-      this.playing = false;
-      if (was) this.stateHandler(false);
-      if (this.meterFrame) cancelAnimationFrame(this.meterFrame);
-      this.meterFrame = 0;
-      this.drawMeter(false);
+    },
+
+    sectionIndex(time) {
+      const sections = this.arrangement?.sections || [];
+      let index = 0;
+      for (let i = 0; i < sections.length; i += 1) {
+        if (time + 0.001 >= sections[i].startTime) index = i;
+      }
+      return index;
+    },
+
+    emitProgress(time) {
+      this.progressHandler(time, this.sectionIndex(time), this.duration);
+    },
+
+    setLoopSection(enabled) {
+      this.looping = Boolean(enabled);
+      if (this.looping) this.loopIndex = this.sectionIndex(this.currentTime());
+    },
+
+    currentTime() {
+      if (this.playing && this.ctx) return this.ctx.currentTime - this.origin;
+      return this.position;
+    },
+
+    seekRatio(ratio) {
+      const clamped = Math.max(0, Math.min(1, ratio));
+      this.seekTo(clamped * this.duration);
+    },
+
+    seekSection(index) {
+      const section = this.arrangement?.sections?.[index];
+      if (!section) return;
+      this.seekTo(section.startTime);
+    },
+
+    seekTo(time) {
+      if (!this.arrangement) return;
+      const t = Math.max(0, Math.min(this.duration, time));
+      this.position = t;
+      if (this.looping) this.loopIndex = this.sectionIndex(t);
+      if (this.playing && this.ctx) {
+        this.haltSources();
+        this.origin = this.ctx.currentTime + 0.04 - t;
+        this.cursor = lowerBound(this.events, t);
+      }
+      this.emitProgress(t);
     },
 
     buildGraph() {
@@ -181,48 +282,39 @@ export function createPlayer() {
     },
 
     pump(token) {
-      if (token !== this.token || !this.ctx) return;
-      const horizon = this.ctx.currentTime + 0.28;
-      while (this.nextLoop < horizon) {
-        this.scheduleLoop(this.nextLoop);
-        this.nextLoop += this.timing.loopDur;
+      if (token !== this.token || !this.ctx || !this.playing) return;
+      const songNow = this.ctx.currentTime - this.origin;
+      if (this.looping) {
+        const loop = this.arrangement.sections[this.loopIndex];
+        if (loop && songNow >= loop.endTime - 0.012) {
+          this.seekTo(loop.startTime);
+          return;
+        }
       }
+      if (songNow >= this.duration - 0.012) {
+        this.finish();
+        return;
+      }
+      const loopEnd = this.looping ? this.arrangement.sections[this.loopIndex]?.endTime ?? this.duration : this.duration;
+      const horizon = Math.min(songNow + 0.32, loopEnd);
+      while (this.cursor < this.events.length && this.events[this.cursor].time < horizon) {
+        const event = this.events[this.cursor];
+        if (event.time >= songNow - 0.03) this.playEvent(event);
+        this.cursor += 1;
+      }
+      this.position = songNow;
+      this.emitProgress(songNow);
     },
 
-    scheduleLoop(start) {
+    playEvent(event) {
+      const when = Math.max(this.ctx.currentTime, this.origin + event.time);
       const song = this.arrangement;
-      const { offsets, step } = this.timing;
-      const at = (index) => start + offsets[index];
-      const dur = (index, length) => {
-        const end = index + length;
-        if (end < offsets.length) return Math.max(0.05, offsets[end] - offsets[index]);
-        return Math.max(0.05, length * step);
-      };
-      const now = this.ctx.currentTime;
-      song.kick.forEach((hit) => {
-        const time = at(hit.step);
-        if (time >= now) this.kick(time, hit.gain);
-      });
-      song.snare.forEach((hit) => {
-        const time = at(hit.step);
-        if (time >= now) this.snare(time, hit.gain);
-      });
-      song.hat.forEach((hit) => {
-        const time = at(hit.step);
-        if (time >= now) this.hat(time, hit.gain, hit.open, song.brightness);
-      });
-      song.bass.forEach((note) => {
-        const time = at(note.step);
-        if (time >= now) this.bass(time, note.midi, dur(note.step, note.dur), song.bassTimbre);
-      });
-      song.chords.forEach((note) => {
-        const time = at(note.step);
-        if (time >= now) this.chord(time, note.midis, dur(note.step, note.dur), song.chordTimbre, song.brightness);
-      });
-      song.lead.forEach((note) => {
-        const time = at(note.step);
-        if (time >= now) this.lead(time, note.midi, dur(note.step, note.dur), song.brightness);
-      });
+      if (event.kind === "kick") this.kick(when, event.gain);
+      else if (event.kind === "snare") this.snare(when, event.gain);
+      else if (event.kind === "hat") this.hat(when, event.gain, event.open, song.brightness);
+      else if (event.kind === "bass") this.bass(when, event.midi, event.seconds, song.bassTimbre);
+      else if (event.kind === "chord") this.chord(when, event.midis, event.seconds, song.chordTimbre, song.brightness);
+      else if (event.kind === "lead") this.lead(when, event.midi, event.seconds, song.brightness);
     },
 
     track(node, startAt, stopAt) {

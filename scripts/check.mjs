@@ -89,10 +89,17 @@ for (const [name, slots, seed] of [["fixed", fixed, "k3m9qx"], ["duo", duo, "blu
   for (const field of ["bandName", "title", "genreLabel", "tempo", "key", "timeSignature", "pocket"]) {
     if (!song[field]) fail(`${name} missing ${field}`);
   }
-  if (!song.structure.length || !song.progression.length || !song.lyrics.verse.length || !song.notes.length) {
+  if (!song.structure.length || !song.progression.length || !song.bridge.length || !song.lyrics.verse.length || !song.notes.length) {
     fail(`${name} sheet incomplete`);
   }
-  const loop = song.arrangement.loopSteps;
+  const names = song.structure.map((section) => section.name);
+  for (const required of ["Intro", "Verse", "Chorus", "Bridge", "Final chorus", "Outro"]) {
+    if (!names.includes(required)) fail(`${name} missing section ${required}`);
+  }
+  const duration = song.arrangement.duration;
+  if (duration < 119 || duration > 241) fail(`${name} duration ${duration.toFixed(1)}s is outside 2–4 minutes`);
+  if (Math.abs(song.duration - duration) > 0.001) fail(`${name} duration mismatch`);
+  const total = song.arrangement.totalSteps;
   const events = [
     ...song.arrangement.kick,
     ...song.arrangement.snare,
@@ -105,10 +112,100 @@ for (const [name, slots, seed] of [["fixed", fixed, "k3m9qx"], ["duo", duo, "blu
     fail(`${name} arrangement missing a part`);
   }
   for (const event of events) {
-    if (event.step < 0 || event.step >= loop) fail(`${name} step ${event.step} outside ${loop}`);
+    if (event.step < 0 || event.step >= total) fail(`${name} step ${event.step} outside ${total}`);
+    if (typeof event.time !== "number" || event.time < 0 || event.time > duration + 0.05) {
+      fail(`${name} event time ${event.time}`);
+    }
   }
+  let cursor = 0;
+  for (const section of song.structure) {
+    if (section.startStep !== cursor) fail(`${name} ${section.name} does not follow the previous section`);
+    cursor = section.endStep;
+    if (section.role === "intro" || section.role === "outro") {
+      if (section.lines.length) fail(`${name} ${section.name} should not have lyrics`);
+    } else if (!section.lines.length) fail(`${name} ${section.name} is missing lyrics`);
+  }
+  if (cursor !== total) fail(`${name} sections do not cover the song`);
+  const verse = song.structure.find((section) => section.role === "verse");
+  const chorus = song.structure.find((section) => section.role === "chorus");
+  const perBar = (section, list) => list.filter((event) => event.step >= section.startStep && event.step < section.endStep).length / section.bars;
+  if (perBar(chorus, song.arrangement.kick) <= perBar(verse, song.arrangement.kick)) {
+    fail(`${name} chorus is not fuller than the verse`);
+  }
+  const leadAvg = (section) => {
+    const notes = song.arrangement.lead.filter((event) => event.step >= section.startStep && event.step < section.endStep);
+    if (!notes.length) return null;
+    return notes.reduce((sum, event) => sum + event.midi, 0) / notes.length;
+  };
+  const verseLead = leadAvg(verse);
+  const chorusLead = leadAvg(chorus);
+  if (verseLead == null || chorusLead == null || chorusLead < verseLead + 1) {
+    fail(`${name} melody does not rise in the chorus (${verseLead} vs ${chorusLead})`);
+  }
+  const bridgeSymbols = song.bridge.map((chord) => chord.symbol).join(" ");
+  const mainSymbols = song.progression.map((chord) => chord.symbol).join(" ");
+  if (bridgeSymbols === mainSymbols) fail(`${name} bridge matches the main progression`);
   if (song.tempo < 72 || song.tempo > 156) fail(`${name} tempo ${song.tempo}`);
 }
+
+const pop = lineup({ singer: "beyonce", guitar: "johnny-marr" });
+const popSong = generateSong(pop, "daylight");
+if (!popSong.structure.some((section) => section.name === "Pre-chorus")) fail("pop song skipped the pre-chorus");
+
+const punkSlots = lineup({});
+punkSlots.guitar = createCustomMusician({
+  name: "Fast Guest",
+  role: "guitar",
+  genres: ["punk"],
+  tempo: "fast",
+  feel: "straight",
+  densityId: "balanced",
+  weightId: "heavy",
+  tone: "driven",
+});
+punkSlots.drums = createCustomMusician({
+  name: "Backbeat Guest",
+  role: "drums",
+  genres: ["punk"],
+  tempo: "fast",
+  feel: "straight",
+  densityId: "busy",
+  weightId: "heavy",
+  tone: "driven",
+});
+const punkSong = generateSong(punkSlots, "fast99");
+if (punkSong.bank !== "punk") fail(`expected punk bank, got ${punkSong.bank}`);
+if (punkSong.structure.some((section) => section.role === "pre")) fail("punk song included a pre-chorus");
+if (punkSong.arrangement.duration < 119 || punkSong.arrangement.duration > 241) {
+  fail(`punk duration ${punkSong.arrangement.duration}`);
+}
+
+const bluesSlots = lineup({});
+bluesSlots.guitar = createCustomMusician({
+  name: "Blues Guest",
+  role: "guitar",
+  genres: ["blues"],
+  tempo: "slow",
+  feel: "straight",
+  densityId: "sparse",
+  weightId: "medium",
+  tone: "warm",
+});
+bluesSlots.bass = createCustomMusician({
+  name: "Blues Bass",
+  role: "bass",
+  genres: ["blues"],
+  tempo: "slow",
+  feel: "swing",
+  densityId: "sparse",
+  weightId: "medium",
+  tone: "warm",
+});
+const bluesSong = generateSong(bluesSlots, "slow12");
+if (bluesSong.bank !== "blues") fail(`expected blues bank, got ${bluesSong.bank}`);
+const bluesVerse = bluesSong.structure.find((section) => section.role === "verse");
+if (!bluesVerse || bluesVerse.bars < 12) fail(`blues verse is ${bluesVerse?.bars} bars`);
+if (bluesSong.structure.some((section) => section.role === "pre")) fail("blues song included a pre-chorus");
 
 const custom = createCustomMusician({
   name: "Studio Guest",

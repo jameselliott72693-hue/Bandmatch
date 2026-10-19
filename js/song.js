@@ -1,3 +1,4 @@
+import { arrangeFull, bridgePattern, planSections } from "./arrange.js";
 import {
   GENRE_LABEL,
   ROLE_IDS,
@@ -421,25 +422,6 @@ const BANK_OF = {
   latin: "funk",
 };
 
-const SCALES = {
-  major: [0, 2, 4, 5, 7, 9, 11],
-  majorPent: [0, 2, 4, 7, 9],
-  minor: [0, 2, 3, 5, 7, 8, 10],
-  minorPent: [0, 3, 5, 7, 10],
-  blues: [0, 3, 5, 6, 7, 10],
-  dorian: [0, 2, 3, 5, 7, 9, 10],
-  mixolydian: [0, 2, 4, 5, 7, 9, 10],
-};
-
-const TONE_PCS = {
-  maj: [0, 4, 7],
-  min: [0, 3, 7],
-  dom7: [0, 4, 7, 10],
-  maj7: [0, 4, 7, 11],
-  min7: [0, 3, 7, 10],
-  power: [0, 7],
-};
-
 function c(off, quality) {
   return { off, quality };
 }
@@ -466,16 +448,6 @@ function mulberry32(seed) {
 
 function pick(rng, list) {
   return list[Math.floor(rng() * list.length)];
-}
-
-function sample(rng, list, count) {
-  const copy = list.slice();
-  const out = [];
-  for (let i = 0; i < count && copy.length; i += 1) {
-    const index = Math.floor(rng() * copy.length);
-    out.push(copy.splice(index, 1)[0]);
-  }
-  return out;
 }
 
 export function slotSignature(slots) {
@@ -528,6 +500,11 @@ function chordSymbol(pc, quality, mode) {
 
 function absoluteChord(tonic, chord) {
   return { pc: (tonic + chord.off) % 12, quality: chord.quality };
+}
+
+function sameChords(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every((chord, index) => chord.pc === b[index].pc && chord.quality === b[index].quality);
 }
 
 export function generateSong(slots, seed) {
@@ -586,10 +563,12 @@ export function generateSong(slots, seed) {
   }
 
   const sixteenthsPerBar = { "4/4": 16, "3/4": 12, "6/8": 12, "7/8": 14 }[timeSignature];
-  const bars = bank === "blues" ? 12 : 4;
   const swing = timeSignature === "4/4" || timeSignature === "3/4" ? swingRaw : 0;
-
-  const structure = chooseStructure(bank, tempo, rng);
+  const planned = planSections({ bank, tempo, sixteenthsPerBar });
+  const bridgePick = bridgePattern(mode, rng);
+  let bridge = bridgePick.chosen.map((chord) => absoluteChord(key.pc, chord));
+  const bridgeAlt = bridgePick.alternate.map((chord) => absoluteChord(key.pc, chord));
+  if (sameChords(bridge, progression)) bridge = bridgeAlt;
   const lyrics = buildLyrics(songMood(bank, weight, brightness, swingRaw), rng);
   const notes = members.map((entry) => ({
     role: entry.role,
@@ -597,12 +576,13 @@ export function generateSong(slots, seed) {
     text: liner(entry, tempo, density, swingRaw, rng),
   }));
 
-  const arrangement = buildArrangement({
+  const arrangement = arrangeFull({
     rng,
     bank,
     byRole,
     progression,
-    bars,
+    bridge,
+    sections: planned,
     sixteenthsPerBar,
     timeSignature,
     tempo,
@@ -614,6 +594,7 @@ export function generateSong(slots, seed) {
     mode,
     tonic: key.pc,
   });
+  const structure = withLyrics(arrangement.sections, lyrics);
 
   const genreLabel = genres.map((genre) => GENRE_LABEL[genre] || genre).join(" · ");
   const keyLabel = `${key.name} ${mode}`;
@@ -638,6 +619,7 @@ export function generateSong(slots, seed) {
     weight: round2(weight),
     brightness: round2(brightness),
     drive: round2(drive),
+    bank,
     pocket,
     structure,
     bars: structure.reduce((sum, section) => sum + section.bars, 0),
@@ -645,8 +627,12 @@ export function generateSong(slots, seed) {
       ...chord,
       symbol: chordSymbol(chord.pc, chord.quality, key.spell),
     })),
-    loopBars: bars,
-    loopLabel: `${bars}-bar loop`,
+    bridge: bridge.map((chord) => ({
+      ...chord,
+      symbol: chordSymbol(chord.pc, chord.quality, key.spell),
+    })),
+    duration: arrangement.duration,
+    durationLabel: clock(arrangement.duration),
     lyrics,
     notes,
     roster: members.map((entry) => ({ role: entry.role, name: entry.person.name })),
@@ -666,28 +652,52 @@ function songMood(bank, weight, brightness, swing) {
   return "night";
 }
 
-function chooseStructure(bank, tempo, rng) {
-  let shape;
-  if (bank === "jazz") shape = [["Head", 12], ["Solo", 12], ["Solo", 12], ["Head", 12], ["Tag", 4]];
-  else if (bank === "blues") shape = [["Intro", 4], ["Verse", 12], ["Verse", 12], ["Solo", 12], ["Verse", 12], ["Turnaround", 4]];
-  else if (bank === "punk") shape = [["Intro", 2], ["Verse", 8], ["Chorus", 4], ["Verse", 8], ["Chorus", 4], ["Outro", 2]];
-  else if (bank === "hiphop") shape = [["Intro", 4], ["Verse", 16], ["Hook", 8], ["Verse", 16], ["Hook", 8], ["Outro", 4]];
-  else if (bank === "metal") shape = [["Intro", 8], ["Verse", 8], ["Chorus", 8], ["Verse", 8], ["Chorus", 8], ["Bridge", 8], ["Chorus", 8]];
-  else if (tempo < 88) shape = [["Intro", 4], ["Verse", 8], ["Chorus", 8], ["Verse", 8], ["Chorus", 8], ["Bridge", 8], ["Chorus", 8], ["Outro", 8]];
-  else shape = [["Intro", 4], ["Verse", 8], ["Chorus", 8], ["Verse", 8], ["Chorus", 8], ["Bridge", 8], ["Chorus", 8], ["Outro", 4]];
-  return shape.map(([name, bars]) => ({ name, bars }));
+function clock(seconds) {
+  const rounded = Math.max(0, Math.round(seconds));
+  return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
+}
+
+function take(rng, pool, count) {
+  const out = [];
+  for (let i = 0; i < count && pool.length; i += 1) {
+    const index = Math.floor(rng() * pool.length);
+    out.push(pool.splice(index, 1)[0]);
+  }
+  return out;
 }
 
 function buildLyrics(mood, rng) {
   const bank = LYRICS[mood] || LYRICS.night;
-  const verse = sample(rng, bank.verse, 4);
+  const versePool = bank.verse.slice();
+  const chorusPool = bank.chorus.slice();
+  const verse = take(rng, versePool, 4);
+  const verseB = take(rng, versePool, 4);
   const hook = pick(rng, bank.hook);
-  const middle = sample(rng, bank.chorus, 2);
+  const middle = take(rng, chorusPool, 2);
+  const pre = take(rng, chorusPool, 2);
+  const bridge = take(rng, versePool, 4);
   return {
     mood,
     verse,
+    verseB,
+    pre,
+    bridge,
     chorus: [hook, middle[0], middle[1], hook],
   };
+}
+
+function withLyrics(sections, lyrics) {
+  let verse = 0;
+  return sections.map((section, index) => {
+    let lines = [];
+    if (section.role === "verse") {
+      lines = verse === 0 ? lyrics.verse : lyrics.verseB;
+      verse += 1;
+    } else if (section.role === "pre") lines = lyrics.pre;
+    else if (section.role === "chorus" || section.role === "final") lines = lyrics.chorus;
+    else if (section.role === "bridge") lines = lyrics.bridge;
+    return { ...section, index, lines };
+  });
 }
 
 function liner(entry, tempo, density, swing, rng) {
@@ -710,293 +720,6 @@ function pocketSentence(song) {
   return `A ${feel}, ${weight}, ${density} pocket at ${song.tempo} BPM, with a ${tone} color and ${drive}.`;
 }
 
-function buildArrangement(ctx) {
-  const {
-    rng, bank, byRole, progression, bars, sixteenthsPerBar: spb, timeSignature,
-    tempo, swing, density, weight, brightness, drive, tonic,
-  } = ctx;
-  const drummer = byRole.drums;
-  const bassist = byRole.bass;
-  const guitar = byRole.guitar;
-  const keys = byRole.keys;
-  const singer = byRole.singer;
-  const drumDensity = drummer ? drummer.density : density;
-  const bassDensity = bassist ? bassist.density : density;
-  const leadDensity = singer ? singer.density : density * 0.85;
-  const guitarDrive = guitar ? guitar.drive : drive;
-
-  let chordTimbre = "piano";
-  let chordRhythm = "sustain";
-  if (bank === "metal" || bank === "punk" || guitarDrive > 0.66) {
-    chordTimbre = "crunch";
-    chordRhythm = "chug";
-  } else if (bank === "funk") {
-    chordTimbre = "stab";
-    chordRhythm = "stab";
-  } else if (bank === "jazz" || bank === "soul" || bank === "hiphop") {
-    chordTimbre = "rhodes";
-    chordRhythm = "sustain";
-  } else if (bank === "country") {
-    chordTimbre = "piano";
-    chordRhythm = "backbeat";
-  } else if (keys && !guitar) {
-    chordTimbre = "piano";
-    chordRhythm = "sustain";
-  } else if (guitar && guitar.drive < 0.25) {
-    chordTimbre = "clean";
-    chordRhythm = "sustain";
-  } else if (guitar) {
-    chordTimbre = "crunch";
-    chordRhythm = "chug";
-  }
-
-  const bassTimbre = (bassist && bassist.drive > 0.55) || drive > 0.62 || bank === "metal" ? "growl" : "round";
-  const scaleName = chooseScale(bank, ctx.mode);
-  const kick = [];
-  const snare = [];
-  const hat = [];
-  const bass = [];
-  const chords = [];
-
-  for (let bar = 0; bar < bars; bar += 1) {
-    const base = bar * spb;
-    const chord = progression[bar % progression.length];
-    const next = progression[(bar + 1) % progression.length];
-    addDrums({ kick, snare, hat, base, spb, timeSignature, bank, drumDensity, weight });
-    addBass({ bass, base, spb, timeSignature, bank, chord, next, bassDensity, swing });
-    addChords({ chords, base, spb, timeSignature, chord, chordRhythm, chordTimbre, drumDensity });
-  }
-
-  const lead = addLead({
-    total: bars * spb,
-    spb,
-    progression,
-    tonic,
-    scale: SCALES[scaleName],
-    density: leadDensity,
-    rng,
-  });
-
-  return {
-    tempo,
-    swing: round2(swing),
-    loopSteps: bars * spb,
-    sixteenthsPerBar: spb,
-    timeSignature,
-    brightness: round2(singer ? singer.brightness * 0.6 + brightness * 0.4 : brightness),
-    drive: round2(drive),
-    chordTimbre,
-    bassTimbre,
-    kick,
-    snare,
-    hat,
-    bass,
-    chords,
-    lead,
-  };
-}
-
-function chooseScale(bank, mode) {
-  if (bank === "blues" || bank === "rock" || bank === "metal" || bank === "punk") return "blues";
-  if (bank === "funk" || bank === "hiphop") return mode === "major" ? "mixolydian" : "dorian";
-  if (bank === "jazz" || bank === "soul") return mode === "major" ? "mixolydian" : "dorian";
-  if (mode === "minor") return "minorPent";
-  return "majorPent";
-}
-
-function addDrums({ kick, snare, hat, base, spb, timeSignature, bank, drumDensity, weight }) {
-  const hatsEvery = drumDensity > 0.62 ? 1 : 2;
-  if (timeSignature === "3/4") {
-    kick.push({ step: base, gain: 0.8 });
-    snare.push({ step: base + 4, gain: 0.28 }, { step: base + 8, gain: 0.28 });
-    for (let i = 0; i < spb; i += 2) hat.push({ step: base + i, gain: 0.1, open: false });
-    return;
-  }
-  if (timeSignature === "6/8") {
-    kick.push({ step: base, gain: 0.8 }, { step: base + 6, gain: 0.55 });
-    snare.push({ step: base + 6, gain: 0.32 });
-    for (let i = 0; i < spb; i += 2) hat.push({ step: base + i, gain: 0.1, open: false });
-    return;
-  }
-  if (timeSignature === "7/8") {
-    kick.push({ step: base, gain: 0.8 }, { step: base + 4, gain: 0.6 }, { step: base + 8, gain: 0.7 });
-    snare.push({ step: base + 4, gain: 0.3 }, { step: base + 8, gain: 0.3 });
-    for (let i = 0; i < spb; i += 2) hat.push({ step: base + i, gain: 0.1, open: false });
-    return;
-  }
-  if (bank === "funk") {
-    kick.push({ step: base, gain: 0.85 }, { step: base + 6, gain: 0.55 }, { step: base + 10, gain: 0.6 });
-    if (drumDensity > 0.55) kick.push({ step: base + 14, gain: 0.4 });
-    snare.push({ step: base + 4, gain: 0.4 }, { step: base + 12, gain: 0.4 });
-    for (let i = 0; i < 16; i += hatsEvery) hat.push({ step: base + i, gain: hatsEvery === 1 ? 0.07 : 0.1, open: false });
-    return;
-  }
-  if (bank === "hiphop") {
-    kick.push({ step: base, gain: 0.9 }, { step: base + 7, gain: 0.45 }, { step: base + 10, gain: 0.55 });
-    snare.push({ step: base + 8, gain: 0.42 });
-    for (let i = 0; i < 16; i += drumDensity > 0.5 ? 2 : 4) hat.push({ step: base + i, gain: 0.09, open: false });
-    return;
-  }
-  if (bank === "jazz") {
-    kick.push({ step: base, gain: 0.35 }, { step: base + 10, gain: 0.22 });
-    snare.push({ step: base + 4, gain: 0.14 }, { step: base + 12, gain: 0.14 });
-    for (let i = 0; i < 16; i += 2) hat.push({ step: base + i, gain: 0.11, open: false });
-    return;
-  }
-  if (bank === "metal") {
-    const step = weight > 0.72 ? 1 : 2;
-    for (let i = 0; i < 16; i += step) kick.push({ step: base + i, gain: step === 1 ? 0.42 : 0.7 });
-    snare.push({ step: base + 4, gain: 0.4 }, { step: base + 12, gain: 0.4 });
-    for (let i = 0; i < 16; i += 2) hat.push({ step: base + i, gain: 0.08, open: false });
-    return;
-  }
-  kick.push({ step: base, gain: 0.85 }, { step: base + 8, gain: 0.72 });
-  if (drumDensity > 0.48) kick.push({ step: base + 10, gain: 0.4 });
-  if (weight > 0.7) kick.push({ step: base + 14, gain: 0.48 });
-  snare.push({ step: base + 4, gain: 0.4 }, { step: base + 12, gain: 0.4 });
-  for (let i = 0; i < 16; i += hatsEvery) {
-    const open = drumDensity > 0.45 && i === 14;
-    hat.push({ step: base + i, gain: open ? 0.12 : hatsEvery === 1 ? 0.07 : 0.1, open });
-  }
-}
-
-function bassMidi(pc) {
-  let midi = 36 + ((pc % 12) + 12) % 12;
-  while (midi < 34) midi += 12;
-  while (midi > 50) midi -= 12;
-  return midi;
-}
-
-function addBass({ bass, base, spb, timeSignature, bank, chord, next, bassDensity, swing }) {
-  const root = bassMidi(chord.pc);
-  const fifth = bassMidi((chord.pc + 7) % 12);
-  if (timeSignature === "6/8") {
-    bass.push({ step: base, midi: root, dur: 6 }, { step: base + 6, midi: fifth, dur: 5 });
-    return;
-  }
-  if (timeSignature === "3/4") {
-    bass.push({ step: base, midi: root, dur: 8 }, { step: base + 8, midi: fifth, dur: 3 });
-    return;
-  }
-  if (timeSignature === "7/8") {
-    bass.push({ step: base, midi: root, dur: 4 }, { step: base + 4, midi: root, dur: 4 }, { step: base + 8, midi: fifth, dur: 5 });
-    return;
-  }
-  if (bank === "jazz" && swing > 0.4) {
-    const third = bassMidi((chord.pc + (String(chord.quality).startsWith("min") ? 3 : 4)) % 12);
-    const approach = bassMidi((next.pc + 11) % 12);
-    [root, third, fifth, approach].forEach((midi, index) => {
-      bass.push({ step: base + index * 4, midi, dur: 3 });
-    });
-    return;
-  }
-  if (bank === "funk") {
-    bass.push({ step: base, midi: root, dur: 2 }, { step: base + 6, midi: Math.min(55, root + 12), dur: 2 });
-    if (bassDensity > 0.45) bass.push({ step: base + 10, midi: root, dur: 1 });
-    if (bassDensity > 0.7) bass.push({ step: base + 14, midi: fifth, dur: 1 });
-    return;
-  }
-  if (bank === "metal" || bank === "punk") {
-    const step = bank === "metal" ? 2 : 4;
-    for (let i = 0; i < 16; i += step) bass.push({ step: base + i, midi: root, dur: Math.max(1, step - 1) });
-    return;
-  }
-  if (bank === "hiphop") {
-    bass.push({ step: base, midi: root, dur: 6 }, { step: base + 10, midi: root, dur: 4 });
-    return;
-  }
-  if (bassDensity < 0.36) {
-    bass.push({ step: base, midi: root, dur: 14 });
-    return;
-  }
-  bass.push({ step: base, midi: root, dur: 6 }, { step: base + 8, midi: root, dur: 4 });
-  if (bassDensity > 0.58) bass.push({ step: base + 10, midi: fifth, dur: 2 });
-}
-
-function voiceChord(chord, low, high) {
-  const intervals = TONE_PCS[chord.quality] || TONE_PCS.maj;
-  const notes = [];
-  let cursor = low;
-  intervals.forEach((interval) => {
-    const pc = (chord.pc + interval) % 12;
-    let found = null;
-    for (let midi = cursor; midi <= high; midi += 1) {
-      if (((midi % 12) + 12) % 12 === pc) {
-        found = midi;
-        break;
-      }
-    }
-    if (found == null) found = low + pc;
-    notes.push(found);
-    cursor = found + 2;
-  });
-  return notes;
-}
-
-function addChords({ chords, base, spb, timeSignature, chord, chordRhythm, chordTimbre, drumDensity }) {
-  if (chordTimbre === "crunch" || chordRhythm === "chug") {
-    const power = voiceChord({ pc: chord.pc, quality: "power" }, 40, 58);
-    power.push(power[0] + 12);
-    const step = drumDensity > 0.6 ? 4 : 8;
-    for (let i = 0; i < spb; i += step) {
-      chords.push({ step: base + i, midis: power, dur: Math.min(3, step) });
-    }
-    return;
-  }
-  const midis = voiceChord(chord, 52, 76);
-  if (chordRhythm === "stab") {
-    [0, 6, 10].filter((hit) => hit < spb).forEach((hit) => {
-      chords.push({ step: base + hit, midis, dur: 2 });
-    });
-    return;
-  }
-  if (chordRhythm === "backbeat" && timeSignature === "4/4") {
-    chords.push({ step: base + 4, midis, dur: 3 }, { step: base + 12, midis, dur: 3 });
-    return;
-  }
-  chords.push({ step: base, midis, dur: Math.max(4, spb - 2) });
-}
-
-function closestTone(midi, pcs, min, max) {
-  let best = midi;
-  let dist = 99;
-  for (let candidate = midi - 7; candidate <= midi + 7; candidate += 1) {
-    const pc = ((candidate % 12) + 12) % 12;
-    if (!pcs.includes(pc)) continue;
-    const gap = Math.abs(candidate - midi);
-    if (gap < dist) {
-      dist = gap;
-      best = candidate;
-    }
-  }
-  return Math.max(min, Math.min(max, best));
-}
-
-function addLead({ total, spb, progression, tonic, scale, density, rng }) {
-  const notes = [];
-  const absScale = scale.map((interval) => (tonic + interval) % 12);
-  let cursor = 0;
-  let midi = closestTone(67, absScale, 60, 78);
-  while (cursor < total - 1) {
-    const restChance = 0.34 - density * 0.18;
-    if (rng() < restChance) {
-      cursor += Math.min(4, total - cursor);
-      continue;
-    }
-    const choices = density > 0.62 ? [2, 2, 4, 4, 6] : [4, 4, 6, 8];
-    let dur = pick(rng, choices);
-    if (cursor + dur > total) dur = total - cursor;
-    const bar = Math.floor(cursor / spb);
-    const chord = progression[bar % progression.length];
-    const chordPcs = (TONE_PCS[chord.quality] || TONE_PCS.maj).map((interval) => (chord.pc + interval) % 12);
-    const jump = pick(rng, [-3, -2, -1, 1, 1, 2, 3]);
-    midi = closestTone(midi + jump, absScale, 60, 78);
-    if (cursor % 4 === 0 && rng() < 0.72) midi = closestTone(midi, chordPcs, 60, 78);
-    notes.push({ step: cursor, midi, dur: Math.max(1, dur - 1) });
-    cursor += dur;
-  }
-  return notes;
-}
 
 function bytesToString(bytes) {
   return new TextDecoder().decode(bytes);
