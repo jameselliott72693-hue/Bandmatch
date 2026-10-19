@@ -663,6 +663,47 @@ code {
   color: var(--muted);
 }
 
+.band-page { margin: 8px 0 28px; }
+
+.band-page .ethics { margin: 0 0 16px; }
+
+.band-hero { display: grid; gap: 16px; }
+
+.band-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+
+.tracklist { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
+
+.tracklist li { display: flex; gap: 8px; align-items: stretch; }
+
+.tracklist li button:first-child {
+  flex: 1;
+  text-align: left;
+  background: var(--raise);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  color: inherit;
+  min-width: 0;
+}
+
+.tracklist li button:first-child span { display: block; color: var(--faint); font-size: 0.85rem; }
+
+.tracklist li.is-current button:first-child { border-color: var(--coral); }
+
+.tracklist li button:last-child {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 12px;
+  color: var(--muted);
+}
+
+.band-hero figcaption { color: var(--faint); font-size: 0.8rem; margin-top: 6px; }
+
+@media (min-width: 860px) {
+  .band-hero { grid-template-columns: 160px minmax(0, 1fr) 200px; align-items: start; }
+}
+
 .saved { margin-top: 22px; }
 
 .favorite { margin-top: 8px; align-items: center; }
