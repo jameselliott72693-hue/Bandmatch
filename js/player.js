@@ -1,4 +1,6 @@
-/** Synthesized drums, bass, chords, and a lead melody. No samples and no voice. */
+/** Synthesized drums, bass, guitar, keys, horns, and a lead melody. No samples and no voice. */
+
+import { defaultMixer, setPartMuted, toneHz } from "./mixer.js";
 
 function midiToFreq(midi) {
   return 440 * Math.pow(2, (midi - 69) / 12);
@@ -21,6 +23,8 @@ function compileEvents(arrangement) {
   arrangement.kick.forEach((hit) => events.push({ kind: "kick", time: hit.time, gain: hit.gain }));
   arrangement.snare.forEach((hit) => events.push({ kind: "snare", time: hit.time, gain: hit.gain }));
   arrangement.hat.forEach((hit) => events.push({ kind: "hat", time: hit.time, gain: hit.gain, open: hit.open }));
+  (arrangement.tom || []).forEach((hit) => events.push({ kind: "tom", time: hit.time, gain: hit.gain, midi: hit.midi }));
+  (arrangement.crash || []).forEach((hit) => events.push({ kind: "crash", time: hit.time, gain: hit.gain }));
   arrangement.bass.forEach((note) => events.push({ kind: "bass", time: note.time, seconds: note.seconds, midi: note.midi }));
   arrangement.chords.forEach((note) => events.push({ kind: "chord", time: note.time, seconds: note.seconds, midis: note.midis }));
   arrangement.lead.forEach((note) => events.push({ kind: "lead", time: note.time, seconds: note.seconds, midi: note.midi }));
@@ -44,8 +48,25 @@ function envGain(ctx, time, peak, attack, hold, release) {
   return gain;
 }
 
+function makeReverb(ctx) {
+  const seconds = 1.6;
+  const length = Math.floor(ctx.sampleRate * seconds);
+  const buffer = ctx.createBuffer(2, length, ctx.sampleRate);
+  for (let channel = 0; channel < 2; channel += 1) {
+    const data = buffer.getChannelData(channel);
+    let last = 0;
+    for (let i = 0; i < length; i += 1) {
+      const white = Math.random() * 2 - 1;
+      last = last * 0.86 + white * 0.14;
+      const t = i / length;
+      data[i] = last * (1 - t) ** 2.6 * (channel === 0 ? 1 : 0.9);
+    }
+  }
+  return buffer;
+}
+
 function makeNoise(ctx) {
-  const length = ctx.sampleRate * 1;
+  const length = ctx.sampleRate * 2;
   const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
   const data = buffer.getChannelData(0);
   for (let i = 0; i < length; i += 1) data[i] = Math.random() * 2 - 1;
@@ -72,8 +93,10 @@ export function createPlayer() {
     token: 0,
     timer: 0,
     sources: [],
-    mutes: { drums: false, bass: false, chords: false, lead: false },
-    partGain: {},
+    mixer: null,
+    strips: {},
+    inputs: {},
+    master: null,
     analyser: null,
     meter: null,
     meterFrame: 0,
@@ -114,12 +137,15 @@ export function createPlayer() {
       this.drawMeter(false);
     },
 
+    setMixer(mixer) {
+      this.mixer = mixer;
+      if (this.ctx && this.strips) this.applyMixer();
+    },
+
     setMute(part, muted) {
-      this.mutes[part] = muted;
-      const gain = this.partGain[part];
-      if (gain && this.ctx) {
-        gain.gain.setTargetAtTime(muted ? 0.0001 : 1, this.ctx.currentTime, 0.02);
-      }
+      if (!this.mixer) this.mixer = defaultMixer([]);
+      setPartMuted(this.mixer, part, muted);
+      this.applyMixer();
     },
 
     async play() {
@@ -244,62 +270,113 @@ export function createPlayer() {
     buildGraph() {
       const ctx = this.ctx;
       this.noise = makeNoise(ctx);
-      const master = ctx.createGain();
-      master.gain.value = 0.8;
-      const compressor = ctx.createDynamicsCompressor();
-      compressor.threshold.value = -14;
-      compressor.knee.value = 18;
-      compressor.ratio.value = 3.2;
-      compressor.attack.value = 0.008;
-      compressor.release.value = 0.22;
+      if (!this.mixer) this.mixer = defaultMixer([]);
+      const dry = ctx.createGain();
+      const wetIn = ctx.createGain();
+      const reverb = ctx.createConvolver();
+      reverb.buffer = makeReverb(ctx);
+      wetIn.connect(reverb);
+      this.master = ctx.createGain();
+      this.master.gain.value = this.mixer.master ?? 0.85;
+      const glue = ctx.createDynamicsCompressor();
+      glue.threshold.value = -16;
+      glue.knee.value = 10;
+      glue.ratio.value = 2.4;
+      glue.attack.value = 0.012;
+      glue.release.value = 0.18;
+      const limiter = ctx.createDynamicsCompressor();
+      limiter.threshold.value = -2.5;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 20;
+      limiter.attack.value = 0.002;
+      limiter.release.value = 0.08;
       this.analyser = ctx.createAnalyser();
       this.analyser.fftSize = 64;
-      master.connect(compressor);
-      compressor.connect(this.analyser);
+      dry.connect(this.master);
+      reverb.connect(this.master);
+      this.master.connect(glue);
+      glue.connect(limiter);
+      limiter.connect(this.analyser);
       this.analyser.connect(ctx.destination);
 
-      ["drums", "bass", "chords", "lead", "horns", "dj", "strings"].forEach((part) => {
-        const optional = part === "horns" || part === "dj" || part === "strings";
-        const key = part === "strings" ? "strings" : part;
-        if (optional && !(this.arrangement?.[key] || []).length) return;
-        const gain = ctx.createGain();
-        gain.gain.value = this.mutes[part] ? 0.0001 : 1;
-        gain.connect(master);
-        this.partGain[part] = gain;
+      this.strips = {};
+      Object.keys(this.mixer.channels).forEach((id) => {
+        this.strips[id] = this.makeStrip(dry, wetIn);
       });
-
-      const drive = this.arrangement?.drive ?? 0.3;
-      this.bassIn = this.coloredBus(this.partGain.bass, 240 + drive * 500, drive > 0.55);
-      this.chordIn = this.coloredBus(this.partGain.chords, 900 + (this.arrangement?.brightness ?? 0.5) * 2200, false);
-      this.leadIn = this.coloredBus(this.partGain.lead, 700 + (this.arrangement?.brightness ?? 0.5) * 3800, false);
-      this.drumIn = this.partGain.drums;
-      this.hornIn = this.partGain.horns ? this.bandBus(this.partGain.horns, 900 + (this.arrangement?.brightness ?? 0.5) * 900) : null;
-      this.djIn = this.partGain.dj || null;
-      this.stringIn = this.partGain.strings ? this.coloredBus(this.partGain.strings, 1400 + (this.arrangement?.brightness ?? 0.5) * 1800, false) : null;
-    },
-
-    bandBus(destination, center) {
-      const filter = this.ctx.createBiquadFilter();
-      filter.type = "bandpass";
-      filter.frequency.value = center;
-      filter.Q.value = 0.9;
-      filter.connect(destination);
-      return filter;
-    },
-
-    coloredBus(destination, cutoff, shape) {
-      const filter = this.ctx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.value = cutoff;
-      filter.Q.value = 0.7;
-      if (shape) {
-        const shaper = makeShaper(this.ctx, this.arrangement?.drive ?? 0.6);
-        shaper.connect(filter);
-        filter.connect(destination);
-        return shaper;
+      if (!Object.keys(this.strips).length) {
+        ["drums", "bass", "guitar", "lead"].forEach((id) => {
+          this.strips[id] = this.makeStrip(dry, wetIn);
+        });
       }
-      filter.connect(destination);
-      return filter;
+      this.inputs = this.routeInputs();
+      this.applyMixer(true);
+    },
+
+    makeStrip(dry, wetIn) {
+      const ctx = this.ctx;
+      const input = ctx.createGain();
+      const drive = ctx.createGain();
+      drive.gain.value = 0.7;
+      const shaper = makeShaper(ctx, 0.42);
+      const tone = ctx.createBiquadFilter();
+      tone.type = "lowpass";
+      tone.frequency.value = 4800;
+      tone.Q.value = 0.65;
+      const fader = ctx.createGain();
+      const panner = ctx.createStereoPanner();
+      const send = ctx.createGain();
+      input.connect(drive);
+      drive.connect(shaper);
+      shaper.connect(tone);
+      tone.connect(fader);
+      fader.connect(panner);
+      panner.connect(dry);
+      panner.connect(send);
+      send.connect(wetIn);
+      return { input, drive, tone, fader, pan: panner, send };
+    },
+
+    routeInputs() {
+      const channels = this.mixer?.channels || {};
+      const pick = (...ids) => {
+        for (let i = 0; i < ids.length; i += 1) {
+          if (this.strips[ids[i]]) return this.strips[ids[i]].input;
+        }
+        return this.master;
+      };
+      const both = Boolean(channels.guitar && channels.keys);
+      return {
+        drums: pick("drums", "backing"),
+        bass: pick("bass", "backing"),
+        lead: pick("lead", "backing"),
+        guitar: both || channels.guitar ? pick("guitar", "backing") : pick("keys", "backing", "guitar"),
+        keys: both || channels.keys ? pick("keys", "backing") : null,
+        horns: channels.horns ? pick("horns") : null,
+        dj: channels.dj ? pick("dj") : null,
+        strings: channels.strings ? pick("strings") : null,
+        bothChords: both,
+      };
+    },
+
+    applyMixer(immediate) {
+      if (!this.ctx || !this.strips) return;
+      const mixer = this.mixer || { master: 0.85, channels: {} };
+      const now = this.ctx.currentTime;
+      const anySolo = Object.values(mixer.channels).some((channel) => channel.solo);
+      const set = (param, value) => {
+        if (immediate) param.value = value;
+        else param.setTargetAtTime(value, now, 0.02);
+      };
+      if (this.master) set(this.master.gain, Math.max(0.0001, mixer.master ?? 0.85));
+      Object.entries(this.strips).forEach(([id, strip]) => {
+        const channel = mixer.channels[id] || { volume: 0.82, pan: 0, mute: false, solo: false, reverb: 0.16, tone: 0.7 };
+        const silenced = channel.mute || (anySolo && !channel.solo);
+        set(strip.fader.gain, silenced ? 0.0001 : Math.max(0.0001, channel.volume));
+        set(strip.pan.pan, Math.max(-1, Math.min(1, channel.pan || 0)));
+        set(strip.send.gain, Math.max(0, channel.reverb || 0));
+        set(strip.tone.frequency, toneHz(id, channel.tone ?? 0.7));
+        set(strip.drive.gain, 0.35 + (channel.tone ?? 0.7) * 1.2);
+      });
     },
 
     pump(token) {
@@ -333,6 +410,8 @@ export function createPlayer() {
       if (event.kind === "kick") this.kick(when, event.gain);
       else if (event.kind === "snare") this.snare(when, event.gain);
       else if (event.kind === "hat") this.hat(when, event.gain, event.open, song.brightness);
+      else if (event.kind === "tom") this.tom(when, event.midi, event.gain);
+      else if (event.kind === "crash") this.crash(when, event.gain);
       else if (event.kind === "bass") this.bass(when, event.midi, event.seconds, song.bassTimbre);
       else if (event.kind === "chord") this.chord(when, event.midis, event.seconds, song.chordTimbre, song.brightness);
       else if (event.kind === "lead") this.lead(when, event.midi, event.seconds, song.brightness);
@@ -351,14 +430,9 @@ export function createPlayer() {
       const backup = {
         ctx: this.ctx,
         noise: this.noise,
-        partGain: this.partGain,
-        drumIn: this.drumIn,
-        bassIn: this.bassIn,
-        chordIn: this.chordIn,
-        leadIn: this.leadIn,
-        hornIn: this.hornIn,
-        djIn: this.djIn,
-        stringIn: this.stringIn,
+        strips: this.strips,
+        inputs: this.inputs,
+        master: this.master,
         sources: this.sources,
         offlineLimit: this.offlineLimit,
       };
@@ -402,14 +476,9 @@ export function createPlayer() {
       } finally {
         this.ctx = backup.ctx;
         this.noise = backup.noise;
-        this.partGain = backup.partGain;
-        this.drumIn = backup.drumIn;
-        this.bassIn = backup.bassIn;
-        this.chordIn = backup.chordIn;
-        this.leadIn = backup.leadIn;
-        this.hornIn = backup.hornIn;
-        this.djIn = backup.djIn;
-        this.stringIn = backup.stringIn;
+        this.strips = backup.strips;
+        this.inputs = backup.inputs;
+        this.master = backup.master;
         this.sources = backup.sources;
         this.offlineLimit = backup.offlineLimit;
       }
@@ -428,157 +497,243 @@ export function createPlayer() {
       if (stop) node.stop(stop);
     },
 
+    noiseBurst(time, dest, { type, freq, q, peak, attack, hold, release, stop }) {
+      const ctx = this.ctx;
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.noise;
+      const filter = ctx.createBiquadFilter();
+      filter.type = type;
+      filter.frequency.value = freq;
+      if (q) filter.Q.value = q;
+      const amp = envGain(ctx, time, peak, attack, hold, release);
+      noise.connect(filter);
+      filter.connect(amp);
+      amp.connect(dest);
+      this.track(noise, time, time + stop);
+    },
+
     kick(time, gain) {
+      const dest = this.inputs.drums;
+      if (!dest) return;
       const ctx = this.ctx;
       const osc = ctx.createOscillator();
       osc.type = "sine";
-      osc.frequency.setValueAtTime(168, time);
-      osc.frequency.exponentialRampToValueAtTime(46, time + 0.09);
-      const amp = envGain(ctx, time, 0.9 * gain, 0.004, 0.05, 0.18);
+      osc.frequency.setValueAtTime(172, time);
+      osc.frequency.exponentialRampToValueAtTime(48, time + 0.1);
+      const amp = envGain(ctx, time, 0.86 * gain, 0.003, 0.045, 0.2);
       osc.connect(amp);
-      amp.connect(this.drumIn);
-      this.track(osc, time, time + 0.26);
-    },
-
-    snare(time, gain) {
-      const ctx = this.ctx;
-      const noise = ctx.createBufferSource();
-      noise.buffer = this.noise;
-      const filter = ctx.createBiquadFilter();
-      filter.type = "highpass";
-      filter.frequency.value = 1400;
-      const amp = envGain(ctx, time, 0.55 * gain, 0.002, 0.03, 0.12);
-      noise.connect(filter);
-      filter.connect(amp);
-      amp.connect(this.drumIn);
-      this.track(noise, time, time + 0.18);
-      const osc = ctx.createOscillator();
-      osc.type = "triangle";
-      osc.frequency.value = 190;
-      const body = envGain(ctx, time, 0.28 * gain, 0.002, 0.02, 0.08);
-      osc.connect(body);
-      body.connect(this.drumIn);
-      this.track(osc, time, time + 0.14);
-    },
-
-    hat(time, gain, open, brightness) {
-      const ctx = this.ctx;
-      const noise = ctx.createBufferSource();
-      noise.buffer = this.noise;
-      const filter = ctx.createBiquadFilter();
-      filter.type = "highpass";
-      filter.frequency.value = 5000 + brightness * 3500;
-      const release = open ? 0.16 : 0.04;
-      const amp = envGain(ctx, time, open ? 0.2 : 0.13, 0.001, 0.008, release);
-      noise.connect(filter);
-      filter.connect(amp);
-      amp.connect(this.drumIn);
-      this.track(noise, time, time + release + 0.04);
-    },
-
-    bass(time, midi, seconds, timbre) {
-      const ctx = this.ctx;
-      const osc = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
-      osc.type = timbre === "growl" ? "sawtooth" : "sine";
-      osc2.type = "triangle";
-      const freq = midiToFreq(midi);
-      osc.frequency.setValueAtTime(freq, time);
-      osc2.frequency.setValueAtTime(freq, time);
-      const amp = envGain(ctx, time, timbre === "growl" ? 0.28 : 0.42, 0.008, Math.max(0.04, seconds * 0.55), 0.08);
-      const amp2 = envGain(ctx, time, 0.08, 0.008, Math.max(0.04, seconds * 0.4), 0.06);
-      osc.connect(amp);
-      osc2.connect(amp2);
-      amp.connect(this.bassIn);
-      amp2.connect(this.bassIn);
-      const stopAt = time + seconds + 0.1;
-      this.track(osc, time, stopAt);
-      this.track(osc2, time, stopAt);
-    },
-
-    chord(time, midis, seconds, timbre, brightness) {
-      midis.forEach((midi) => {
-        if (timbre === "crunch") this.crunchNote(time, midi, seconds);
-        else if (timbre === "stab") this.stabNote(time, midi, brightness);
-        else if (timbre === "clean") this.pluckNote(time, midi, seconds, brightness);
-        else this.padNote(time, midi, seconds, timbre, brightness);
+      amp.connect(dest);
+      this.track(osc, time, time + 0.28);
+      this.noiseBurst(time, dest, {
+        type: "highpass", freq: 1800, peak: 0.22 * gain, attack: 0.001, hold: 0.004, release: 0.02, stop: 0.04,
       });
     },
 
-    crunchNote(time, midi, seconds) {
+    snare(time, gain) {
+      const dest = this.inputs.drums;
+      if (!dest) return;
       const ctx = this.ctx;
-      const osc = ctx.createOscillator();
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(midiToFreq(midi), time);
-      const filter = ctx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(420, time);
-      filter.frequency.exponentialRampToValueAtTime(1400, time + 0.04);
-      filter.frequency.exponentialRampToValueAtTime(500, time + Math.min(0.2, seconds));
-      const shaper = makeShaper(ctx, 0.8);
-      const amp = envGain(ctx, time, 0.11, 0.005, Math.max(0.03, seconds * 0.45), 0.06);
-      osc.connect(filter);
-      filter.connect(shaper);
-      shaper.connect(amp);
-      amp.connect(this.partGain.chords);
-      this.track(osc, time, time + seconds + 0.08);
-    },
-
-    stabNote(time, midi, brightness) {
-      const ctx = this.ctx;
-      const osc = ctx.createOscillator();
-      osc.type = "square";
-      osc.frequency.setValueAtTime(midiToFreq(midi), time);
-      const filter = ctx.createBiquadFilter();
-      filter.type = "bandpass";
-      filter.frequency.value = 900 + brightness * 1400;
-      filter.Q.value = 2.4;
-      const amp = envGain(ctx, time, 0.09, 0.004, 0.03, 0.07);
-      osc.connect(filter);
-      filter.connect(amp);
-      amp.connect(this.chordIn);
-      this.track(osc, time, time + 0.14);
-    },
-
-    pluckNote(time, midi, seconds, brightness) {
-      const ctx = this.ctx;
+      this.noiseBurst(time, dest, {
+        type: "bandpass", freq: 1900, q: 0.8, peak: 0.42 * gain, attack: 0.001, hold: 0.02, release: 0.1, stop: 0.16,
+      });
+      this.noiseBurst(time, dest, {
+        type: "highpass", freq: 4200, peak: 0.16 * gain, attack: 0.001, hold: 0.01, release: 0.06, stop: 0.1,
+      });
       const osc = ctx.createOscillator();
       osc.type = "triangle";
-      osc.frequency.setValueAtTime(midiToFreq(midi), time);
-      const filter = ctx.createBiquadFilter();
-      filter.type = "lowpass";
-      filter.frequency.setValueAtTime(1800 + brightness * 2000, time);
-      filter.frequency.exponentialRampToValueAtTime(700, time + seconds);
-      const amp = envGain(ctx, time, 0.12, 0.005, 0.04, Math.max(0.08, seconds * 0.5));
-      osc.connect(filter);
-      filter.connect(amp);
-      amp.connect(this.chordIn);
-      this.track(osc, time, time + seconds + 0.12);
+      osc.frequency.setValueAtTime(196, time);
+      osc.frequency.exponentialRampToValueAtTime(150, time + 0.08);
+      const body = envGain(ctx, time, 0.26 * gain, 0.002, 0.02, 0.07);
+      osc.connect(body);
+      body.connect(dest);
+      this.track(osc, time, time + 0.12);
     },
 
-    padNote(time, midi, seconds, timbre, brightness) {
+    hat(time, gain, open, brightness) {
+      const dest = this.inputs.drums;
+      if (!dest) return;
+      const ctx = this.ctx;
+      const level = gain == null ? 1 : gain;
+      const release = open ? 0.18 : 0.035;
+      this.noiseBurst(time, dest, {
+        type: "highpass",
+        freq: 6200 + brightness * 2800,
+        peak: (open ? 0.16 : 0.11) * level,
+        attack: 0.001,
+        hold: 0.006,
+        release,
+        stop: release + 0.04,
+      });
+      [7800, 11200].forEach((freq, index) => {
+        const osc = ctx.createOscillator();
+        osc.type = "square";
+        osc.frequency.value = freq + brightness * 400;
+        const amp = envGain(ctx, time, (open ? 0.018 : 0.012) * level * (index ? 0.6 : 1), 0.001, 0.004, open ? 0.05 : 0.02);
+        osc.connect(amp);
+        amp.connect(dest);
+        this.track(osc, time, time + (open ? 0.08 : 0.04));
+      });
+    },
+
+    tom(time, midi, gain) {
+      const dest = this.inputs.drums;
+      if (!dest) return;
+      const ctx = this.ctx;
+      const pitch = midi || 47;
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(midiToFreq(pitch + 8), time);
+      osc.frequency.exponentialRampToValueAtTime(midiToFreq(pitch), time + 0.09);
+      const amp = envGain(ctx, time, 0.48 * (gain || 0.5), 0.003, 0.04, 0.16);
+      osc.connect(amp);
+      amp.connect(dest);
+      this.track(osc, time, time + 0.24);
+      this.noiseBurst(time, dest, {
+        type: "bandpass", freq: midiToFreq(pitch + 18), q: 1.2, peak: 0.08 * (gain || 0.5), attack: 0.001, hold: 0.008, release: 0.04, stop: 0.07,
+      });
+    },
+
+    crash(time, gain) {
+      const dest = this.inputs.drums;
+      if (!dest) return;
+      const ctx = this.ctx;
+      const level = gain || 0.5;
+      this.noiseBurst(time, dest, {
+        type: "highpass", freq: 4800, peak: 0.18 * level, attack: 0.002, hold: 0.05, release: 0.7, stop: 0.9,
+      });
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.value = 3100;
+      const amp = envGain(ctx, time, 0.02 * level, 0.002, 0.02, 0.2);
+      osc.connect(amp);
+      amp.connect(dest);
+      this.track(osc, time, time + 0.28);
+    },
+
+    bass(time, midi, seconds, timbre) {
+      const dest = this.inputs.bass;
+      if (!dest) return;
       const ctx = this.ctx;
       const freq = midiToFreq(midi);
+      const plucked = timbre === "growl";
       const osc = ctx.createOscillator();
       const osc2 = ctx.createOscillator();
-      osc.type = "sine";
-      osc2.type = timbre === "piano" ? "triangle" : "sine";
+      osc.type = plucked ? "sawtooth" : "sine";
+      osc2.type = plucked ? "triangle" : "triangle";
       osc.frequency.setValueAtTime(freq, time);
-      osc2.frequency.setValueAtTime(freq * (timbre === "rhodes" ? 2 : 1), time);
-      const peak = timbre === "piano" ? 0.1 : 0.08;
-      const amp = envGain(ctx, time, peak, timbre === "piano" ? 0.008 : 0.02, seconds * 0.55, 0.18);
-      const amp2 = envGain(ctx, time, peak * (timbre === "rhodes" ? 0.18 : 0.35), 0.01, seconds * 0.3, 0.12);
+      osc2.frequency.setValueAtTime(plucked ? freq * 1.005 : freq * 2, time);
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.value = 800 + brightness * 2600;
+      if (plucked) {
+        filter.frequency.setValueAtTime(1400, time);
+        filter.frequency.exponentialRampToValueAtTime(140, time + Math.min(0.18, Math.max(0.06, seconds * 0.45)));
+        filter.Q.value = 0.9;
+      } else {
+        filter.frequency.value = 280;
+        filter.Q.value = 0.5;
+      }
+      const amp = envGain(ctx, time, plucked ? 0.22 : 0.38, 0.006, Math.max(0.04, seconds * (plucked ? 0.35 : 0.55)), 0.08);
+      const amp2 = envGain(ctx, time, plucked ? 0.08 : 0.06, 0.004, Math.max(0.02, seconds * 0.25), 0.06);
       osc.connect(amp);
       osc2.connect(amp2);
       amp.connect(filter);
       amp2.connect(filter);
-      filter.connect(this.chordIn);
-      const stopAt = time + seconds + 0.2;
+      filter.connect(dest);
+      const stopAt = time + seconds + 0.1;
       this.track(osc, time, stopAt);
       this.track(osc2, time, stopAt);
+      if (!plucked) {
+        this.noiseBurst(time, dest, {
+          type: "bandpass", freq: 420, q: 1.4, peak: 0.05, attack: 0.001, hold: 0.006, release: 0.03, stop: 0.05,
+        });
+      }
+    },
+
+    chord(time, midis, seconds, timbre, brightness) {
+      const song = this.arrangement;
+      midis.forEach((midi) => {
+        if (this.inputs.bothChords) {
+          const electric = (song.drive ?? 0.3) > 0.4 || timbre === "crunch" || timbre === "stab";
+          this.guitarNote(time, midi, seconds, timbre === "stab" ? "stab" : electric ? "electric" : "clean", brightness, this.inputs.guitar);
+          this.keysNote(time, midi, seconds, song.keysVoice === "organ" ? "organ" : "ep", brightness, this.inputs.keys);
+          return;
+        }
+        const dest = this.inputs.guitar;
+        if (timbre === "crunch") this.guitarNote(time, midi, seconds, "electric", brightness, dest);
+        else if (timbre === "stab") this.guitarNote(time, midi, seconds, "stab", brightness, dest);
+        else if (timbre === "clean") this.guitarNote(time, midi, seconds, "clean", brightness, dest);
+        else this.keysNote(time, midi, seconds, song.keysVoice === "organ" && timbre !== "piano" ? "organ" : "ep", brightness, dest);
+      });
+    },
+
+    guitarNote(time, midi, seconds, voice, brightness, dest) {
+      if (!dest) return;
+      const ctx = this.ctx;
+      const freq = midiToFreq(midi);
+      const electric = voice !== "clean";
+      const osc = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      osc.type = electric ? "sawtooth" : "triangle";
+      osc2.type = electric ? "sawtooth" : "sine";
+      osc.frequency.setValueAtTime(freq, time);
+      osc2.frequency.setValueAtTime(freq * (electric ? 1.006 : 2.003), time);
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      const open = electric ? 780 + brightness * 1800 : 1700 + brightness * 2400;
+      const close = electric ? 380 : 640;
+      filter.frequency.setValueAtTime(Math.max(80, open), time);
+      filter.frequency.exponentialRampToValueAtTime(close, time + Math.max(0.08, Math.min(seconds, 0.5)));
+      filter.Q.value = electric ? 0.85 : 0.55;
+      const peak = voice === "stab" ? 0.07 : electric ? 0.085 : 0.1;
+      const hold = voice === "stab" ? 0.025 : Math.max(0.03, seconds * 0.38);
+      const release = voice === "stab" ? 0.055 : Math.max(0.06, seconds * 0.32);
+      const amp = envGain(ctx, time, peak, 0.004, hold, release);
+      const amp2 = envGain(ctx, time, peak * (electric ? 0.55 : 0.22), 0.004, hold * 0.6, release);
+      osc.connect(amp);
+      osc2.connect(amp2);
+      amp.connect(filter);
+      amp2.connect(filter);
+      filter.connect(dest);
+      const stop = time + (voice === "stab" ? 0.16 : seconds + 0.1);
+      this.track(osc, time, stop);
+      this.track(osc2, time, stop);
+    },
+
+    keysNote(time, midi, seconds, voice, brightness, dest) {
+      if (!dest) return;
+      const ctx = this.ctx;
+      const freq = midiToFreq(midi);
+      if (voice === "organ") {
+        [[1, 0.07], [2, 0.035], [3, 0.022], [4, 0.012]].forEach(([ratio, peak]) => {
+          const osc = ctx.createOscillator();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(freq * ratio, time);
+          const amp = envGain(ctx, time, peak, 0.018, Math.max(0.06, seconds * 0.7), 0.08);
+          osc.connect(amp);
+          amp.connect(dest);
+          this.track(osc, time, time + seconds + 0.1);
+        });
+        return;
+      }
+      const osc = ctx.createOscillator();
+      const bell = ctx.createOscillator();
+      osc.type = "sine";
+      bell.type = "sine";
+      osc.frequency.setValueAtTime(freq, time);
+      bell.frequency.setValueAtTime(freq * 2, time);
+      const amp = envGain(ctx, time, 0.1, 0.006, Math.max(0.04, seconds * 0.45), 0.16);
+      const bellAmp = envGain(ctx, time, 0.045 + brightness * 0.02, 0.004, 0.03, 0.1);
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 1400 + brightness * 2200;
+      osc.connect(amp);
+      bell.connect(bellAmp);
+      amp.connect(filter);
+      bellAmp.connect(filter);
+      filter.connect(dest);
+      const stopAt = time + seconds + 0.18;
+      this.track(osc, time, stopAt);
+      this.track(bell, time, stopAt);
     },
 
     lead(time, midi, seconds, brightness) {
@@ -605,7 +760,7 @@ export function createPlayer() {
       osc2.connect(amp2);
       amp.connect(filter);
       amp2.connect(filter);
-      filter.connect(this.leadIn);
+      filter.connect(this.inputs.lead);
       const stopAt = time + seconds + 0.1;
       this.track(osc, time, stopAt);
       this.track(osc2, time, stopAt);
@@ -613,59 +768,57 @@ export function createPlayer() {
     },
 
     horn(time, midi, seconds, brightness) {
-      if (!this.hornIn) return;
+      const dest = this.inputs.horns;
+      if (!dest) return;
       const ctx = this.ctx;
       const freq = midiToFreq(midi);
       const osc = ctx.createOscillator();
       const osc2 = ctx.createOscillator();
       osc.type = "sawtooth";
-      osc2.type = "square";
-      osc.frequency.setValueAtTime(freq, time);
-      osc2.frequency.setValueAtTime(freq * 1.004, time);
+      osc2.type = "sawtooth";
+      osc.frequency.setValueAtTime(freq * 0.94, time);
+      osc.frequency.exponentialRampToValueAtTime(freq, time + 0.055);
+      osc2.frequency.setValueAtTime(freq * 0.945, time);
+      osc2.frequency.exponentialRampToValueAtTime(freq * 1.004, time + 0.055);
       const filter = ctx.createBiquadFilter();
       filter.type = "bandpass";
-      filter.frequency.setValueAtTime(700, time);
-      filter.frequency.exponentialRampToValueAtTime(1400 + brightness * 800, time + 0.08);
-      filter.Q.value = 0.8;
-      const amp = envGain(ctx, time, 0.08, 0.02, Math.max(0.04, seconds * 0.5), 0.08);
-      const amp2 = envGain(ctx, time, 0.03, 0.02, Math.max(0.03, seconds * 0.4), 0.06);
+      filter.frequency.setValueAtTime(520, time);
+      filter.frequency.exponentialRampToValueAtTime(1500 + brightness * 700, time + 0.09);
+      filter.Q.value = 0.85;
+      const amp = envGain(ctx, time, 0.07, 0.018, Math.max(0.04, seconds * 0.5), 0.09);
+      const amp2 = envGain(ctx, time, 0.028, 0.02, Math.max(0.03, seconds * 0.4), 0.07);
       osc.connect(amp);
       osc2.connect(amp2);
       amp.connect(filter);
       amp2.connect(filter);
-      filter.connect(this.hornIn);
+      filter.connect(dest);
       const stopAt = time + seconds + 0.1;
       this.track(osc, time, stopAt);
       this.track(osc2, time, stopAt);
     },
 
     stringNote(time, midi, seconds, brightness) {
-      if (!this.stringIn) return;
+      const dest = this.inputs.strings;
+      if (!dest) return;
       const ctx = this.ctx;
       const freq = midiToFreq(midi);
-      const osc = ctx.createOscillator();
-      const osc2 = ctx.createOscillator();
-      osc.type = "sawtooth";
-      osc2.type = "triangle";
-      osc.frequency.setValueAtTime(freq, time);
-      osc2.frequency.setValueAtTime(freq * 1.006, time);
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.value = 900 + brightness * 1600;
-      const amp = envGain(ctx, time, 0.045, 0.08, Math.max(0.08, seconds * 0.62), 0.2);
-      const amp2 = envGain(ctx, time, 0.02, 0.09, Math.max(0.06, seconds * 0.5), 0.18);
-      osc.connect(amp);
-      osc2.connect(amp2);
-      amp.connect(filter);
-      amp2.connect(filter);
-      filter.connect(this.stringIn);
-      const stopAt = time + seconds + 0.22;
-      this.track(osc, time, stopAt);
-      this.track(osc2, time, stopAt);
+      filter.frequency.value = 1100 + brightness * 1800;
+      filter.connect(dest);
+      [[1, "sawtooth", 0.032], [1.004, "sawtooth", 0.02], [0.997, "triangle", 0.018]].forEach(([ratio, type, peak]) => {
+        const osc = ctx.createOscillator();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq * ratio, time);
+        const amp = envGain(ctx, time, peak, 0.12, Math.max(0.08, seconds * 0.62), 0.24);
+        osc.connect(amp);
+        amp.connect(filter);
+        this.track(osc, time, time + seconds + 0.26);
+      });
     },
 
     scratch(time, seconds, gain) {
-      if (!this.djIn) return;
+      if (!this.inputs.dj) return;
       const ctx = this.ctx;
       const noise = ctx.createBufferSource();
       noise.buffer = this.noise;
@@ -679,19 +832,19 @@ export function createPlayer() {
       const amp = envGain(ctx, time, 0.22 * (gain || 0.4), 0.005, Math.max(0.02, seconds * 0.35), 0.05);
       noise.connect(filter);
       filter.connect(amp);
-      amp.connect(this.djIn);
+      amp.connect(this.inputs.dj);
       this.track(noise, time, time + seconds + 0.06);
     },
 
     sub(time, midi, seconds, gain) {
-      if (!this.djIn) return;
+      if (!this.inputs.dj) return;
       const ctx = this.ctx;
       const osc = ctx.createOscillator();
       osc.type = "sine";
       osc.frequency.setValueAtTime(midiToFreq(midi), time);
       const amp = envGain(ctx, time, 0.34 * (gain || 0.6), 0.005, Math.max(0.04, seconds * 0.5), 0.08);
       osc.connect(amp);
-      amp.connect(this.djIn);
+      amp.connect(this.inputs.dj);
       this.track(osc, time, time + seconds + 0.08);
     },
 

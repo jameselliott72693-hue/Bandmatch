@@ -1,5 +1,7 @@
 /** Format-1 MIDI for one imagined song. One track per part that plays. */
 
+import { midiCc } from "./mixer.js";
+
 function vlq(value) {
   let n = Math.max(0, value | 0);
   const bytes = [n & 0x7f];
@@ -88,11 +90,15 @@ function noteItems(list, swing, pitchOf, velOf) {
   return items;
 }
 
-function partTrack(name, channel, program, items) {
+function partTrack(name, channel, program, items, cc) {
   const notes = scheduleNotes(channel, items);
+  const volume = cc?.volume ?? 100;
+  const pan = cc?.pan ?? 64;
   const events = [
     { tick: 0, order: -2, bytes: nameBytes(name) },
     { tick: 0, order: -1, bytes: [0xc0 | channel, program] },
+    { tick: 0, order: 0, bytes: [0xb0 | channel, 7, volume] },
+    { tick: 0, order: 0, bytes: [0xb0 | channel, 10, pan] },
     ...notes,
   ];
   events.push({ tick: endTick(events), order: 9, bytes: [0xff, 0x2f, 0x00] });
@@ -123,30 +129,40 @@ export function songToMidi(song) {
     ...noteItems(arrangement.kick, swing, () => [36], (event) => vel(event.gain)),
     ...noteItems(arrangement.snare, swing, () => [38], (event) => vel(event.gain, 80)),
     ...noteItems(arrangement.hat, swing, (event) => [event.open ? 46 : 42], (event) => vel(event.gain, 60)),
+    ...noteItems(arrangement.tom || [], swing, (event) => [event.midi || 47], (event) => vel(event.gain, 70)),
+    ...noteItems(arrangement.crash || [], swing, () => [49], (event) => vel(event.gain, 80)),
   ];
-  tracks.push(partTrack("Drums", 9, 0, drumItems));
+  const drumId = song.mixer?.channels?.drums ? "drums" : "backing";
+  tracks.push(partTrack("Drums", 9, 0, drumItems, midiCc(song.mixer, drumId)));
 
-  const programs = { piano: 0, rhodes: 4, crunch: 30, clean: 27, stab: 4 };
+  const programs = { piano: 0, rhodes: 4, crunch: 30, clean: 27, stab: 30, ep: 4, organ: 16 };
+  const guitarProgram = programs[arrangement.chordTimbre] ?? 27;
+  const keysProgram = arrangement.keysVoice === "organ" ? 16 : 4;
+  const chordItems = noteItems(arrangement.chords, swing, (event) => event.midis, () => 78);
+  const bothChairs = song.mixer?.channels?.guitar && song.mixer?.channels?.keys;
   tracks.push(partTrack(
     "Bass",
     0,
     arrangement.bassTimbre === "growl" ? 34 : 33,
     noteItems(arrangement.bass, swing, (event) => [event.midi], () => 96),
+    midiCc(song.mixer, song.mixer?.channels?.bass ? "bass" : "backing"),
   ));
-  tracks.push(partTrack(
-    "Chords",
-    1,
-    programs[arrangement.chordTimbre] ?? 0,
-    noteItems(arrangement.chords, swing, (event) => event.midis, () => 78),
-  ));
+  if (bothChairs) {
+    tracks.push(partTrack("Guitar", 1, guitarProgram === 4 || guitarProgram === 0 || guitarProgram === 16 ? 27 : guitarProgram, chordItems, midiCc(song.mixer, "guitar")));
+    tracks.push(partTrack("Keys", 6, keysProgram, chordItems, midiCc(song.mixer, "keys")));
+  } else {
+    const chordId = song.mixer?.channels?.guitar ? "guitar" : song.mixer?.channels?.keys ? "keys" : "backing";
+    tracks.push(partTrack("Chords", 1, programs[arrangement.chordTimbre] ?? 0, chordItems, midiCc(song.mixer, chordId)));
+  }
   tracks.push(partTrack(
     "Lead",
     2,
     80,
     noteItems(arrangement.lead, swing, (event) => [event.midi], () => 92),
+    midiCc(song.mixer, song.mixer?.channels?.lead ? "lead" : "backing"),
   ));
   if (arrangement.horns?.length) {
-    tracks.push(partTrack("Horns", 3, 61, noteItems(arrangement.horns, swing, (event) => event.midis, () => 90)));
+    tracks.push(partTrack("Horns", 3, 61, noteItems(arrangement.horns, swing, (event) => event.midis, () => 90), midiCc(song.mixer, "horns")));
   }
   if (arrangement.dj?.length) {
     const hits = arrangement.dj.map((event) => (
@@ -154,10 +170,10 @@ export function songToMidi(song) {
         ? { step: event.step, dur: event.dur || 1, midi: 74, gain: event.gain }
         : { step: event.step, dur: event.dur || 1, midi: event.midi, gain: event.gain }
     ));
-    tracks.push(partTrack("DJ", 4, 103, noteItems(hits, swing, (event) => [event.midi], (event) => vel(event.gain))));
+    tracks.push(partTrack("DJ", 4, 103, noteItems(hits, swing, (event) => [event.midi], (event) => vel(event.gain)), midiCc(song.mixer, "dj")));
   }
   if (arrangement.strings?.length) {
-    tracks.push(partTrack("Strings", 5, 48, noteItems(arrangement.strings, swing, (event) => event.midis, () => 72)));
+    tracks.push(partTrack("Strings", 5, 48, noteItems(arrangement.strings, swing, (event) => event.midis, () => 72), midiCc(song.mixer, "strings")));
   }
 
   const header = [

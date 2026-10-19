@@ -181,6 +181,9 @@ export function arrangeFull(ctx) {
   writeHorns({ sections, spb, ctx, horns });
   writeDj({ sections, spb, ctx, dj });
   writeStrings({ sections, spb, ctx, strings });
+  const tom = [];
+  const crash = [];
+  addDrumColor(sections, spb, tom, crash);
 
   const stamp = (list, withDur) => {
     list.forEach((event) => {
@@ -191,6 +194,8 @@ export function arrangeFull(ctx) {
   stamp(kick, false);
   stamp(snare, false);
   stamp(hat, false);
+  stamp(tom, false);
+  stamp(crash, false);
   stamp(bass, true);
   stamp(chords, true);
   stamp(lead, true);
@@ -212,10 +217,13 @@ export function arrangeFull(ctx) {
     drive: Math.round(ctx.drive * 100) / 100,
     chordTimbre: timbre.chordTimbre,
     bassTimbre: timbre.bassTimbre,
+    keysVoice: keysVoiceFor(ctx),
     sections,
     kick,
     snare,
     hat,
+    tom,
+    crash,
     bass,
     chords,
     lead,
@@ -304,6 +312,27 @@ function writeStrings({ sections, spb, ctx, strings }) {
 function chordFor(ctx, role, local, absoluteBar) {
   if (role === "bridge") return ctx.bridge[((local % ctx.bridge.length) + ctx.bridge.length) % ctx.bridge.length];
   return ctx.progression[((absoluteBar % ctx.progression.length) + ctx.progression.length) % ctx.progression.length];
+}
+
+function keysVoiceFor(ctx) {
+  const bank = ctx.bank;
+  const organBanks = bank === "soul" || bank === "rock" || bank === "jazz" || bank === "funk" || bank === "pop";
+  if (ctx.byRole.keys && organBanks && ctx.brightness >= 0.42) return "organ";
+  return "ep";
+}
+
+function addDrumColor(sections, spb, tom, crash) {
+  sections.forEach((section) => {
+    if (section.role === "chorus" || section.role === "final") {
+      crash.push({ step: section.startStep, gain: 0.62 });
+    }
+    if (section.role === "outro") return;
+    const start = section.endStep - Math.min(6, Math.floor(spb / 2));
+    [50, 47, 43].forEach((midi, index) => {
+      const step = start + index * 2;
+      if (step >= section.startStep && step < section.endStep) tom.push({ step, midi, gain: 0.46 + index * 0.07 });
+    });
+  });
 }
 
 function chooseTimbres(ctx) {

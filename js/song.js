@@ -1,4 +1,5 @@
 import { arrangeFull, bridgePattern, planSections } from "./arrange.js";
+import { applyCompactMix, compactMixer, defaultMixer } from "./mixer.js";
 import {
   GENRE_LABEL,
   ROLE_IDS,
@@ -601,6 +602,7 @@ export function generateSong(slots, seed) {
   const genreLabel = genres.map((genre) => GENRE_LABEL[genre] || genre).join(" · ");
   const keyLabel = `${key.name} ${mode}`;
   const pocket = pocketSentence({ swing: swingRaw, weight, density, brightness, drive, tempo });
+  const roster = members.map((entry) => ({ role: entry.role, name: entry.person.name }));
 
   return {
     seed,
@@ -637,7 +639,8 @@ export function generateSong(slots, seed) {
     durationLabel: clock(arrangement.duration),
     lyrics,
     notes,
-    roster: members.map((entry) => ({ role: entry.role, name: entry.person.name })),
+    roster,
+    mixer: defaultMixer(roster),
     arrangement,
   };
 }
@@ -731,7 +734,7 @@ function stringToBytes(text) {
   return new TextEncoder().encode(text);
 }
 
-export function encodeShare(slots, seed) {
+export function encodeShare(slots, seed, extra) {
   const payload = { v: 1, seed, slots: {} };
   ROLE_IDS.forEach((role) => {
     const person = slots?.[role];
@@ -747,6 +750,8 @@ export function encodeShare(slots, seed) {
       payload.slots[role] = { id: person.id };
     }
   });
+  const mix = extra?.mix || (extra?.mixer ? compactMixer(extra.mixer) : null);
+  if (mix) payload.mix = mix;
   const bytes = stringToBytes(JSON.stringify(payload));
   let binary = "";
   bytes.forEach((byte) => {
@@ -792,7 +797,12 @@ export function decodeShare(encoded) {
   });
   const count = ROLE_IDS.filter((role) => slots[role]).length;
   if (count < 2) throw new Error("That lineup could not be restored.");
-  return { seed: payload.seed.slice(0, 24), slots };
+  return { seed: payload.seed.slice(0, 24), slots, mix: payload.mix || null };
+}
+
+export function withSharedMix(song, mix) {
+  song.mixer = applyCompactMix(song.mixer || defaultMixer(song.roster), mix);
+  return song;
 }
 
 export function blankSlots() {

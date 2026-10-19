@@ -8,9 +8,10 @@ import {
   roleLabel,
 } from "./musicians.js";
 import { drawCover } from "./cover.js";
+import { CHANNEL_LABEL, channelOrder, partIsMuted, setPartMuted } from "./mixer.js";
 import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
-import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature } from "./song.js";
+import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
 const FAVORITES_KEY = "bandmatch.v1.favorites";
 const player = createPlayer();
@@ -342,13 +343,15 @@ function renderSong() {
       </div>
       <div class="mutes" role="group" aria-label="Mute parts">
         ${parts.map(([part, label]) => {
-          const on = !state.mutes[part];
+          const on = !partIsMuted(song.mixer, part);
           return `<button type="button" class="mute${on ? " is-on" : ""}" data-mute="${part}" aria-pressed="${on}">${label}</button>`;
         }).join("")}
       </div>
+      ${mixerMarkup(song)}
       <p class="fine">Click the bar or a section to jump. Loop section repeats whichever section the playhead is in. Lead is a synthesizer, not a vocal. Empty chairs still get a generic part shaped by the lineup.</p>
     </div>`;
   player.load(song.arrangement);
+  player.setMixer(song.mixer);
   player.attachMeter(document.querySelector("#meter"));
   drawCover(document.querySelector("#cover"), song);
   document.querySelector("#play").disabled = isStale();
@@ -375,10 +378,109 @@ function renderSong() {
   document.querySelectorAll("[data-mute]").forEach((button) => {
     button.addEventListener("click", () => {
       const part = button.dataset.mute;
-      state.mutes[part] = !state.mutes[part];
-      player.setMute(part, state.mutes[part]);
-      button.classList.toggle("is-on", !state.mutes[part]);
-      button.setAttribute("aria-pressed", String(!state.mutes[part]));
+      const next = !partIsMuted(state.song.mixer, part);
+      setPartMuted(state.song.mixer, part, next);
+      state.mutes[part] = next;
+      player.setMixer(state.song.mixer);
+      refreshMixButtons();
+      rememberMix();
+    });
+  });
+  bindMixer();
+}
+
+function mixerMarkup(song) {
+  const mixer = song.mixer;
+  const strips = channelOrder(mixer).map((id) => {
+    const channel = mixer.channels[id];
+    const name = CHANNEL_LABEL[id] || id;
+    return `<div class="strip" data-channel="${id}">
+      <span class="strip-name">${esc(name)}</span>
+      <label>Vol <input type="range" data-mix="volume" min="0" max="1" step="0.01" value="${channel.volume}" aria-label="${esc(name)} volume"></label>
+      <label>Pan <input type="range" data-mix="pan" min="-1" max="1" step="0.01" value="${channel.pan}" aria-label="${esc(name)} pan"></label>
+      <label>Tone <input type="range" data-mix="tone" min="0" max="1" step="0.01" value="${channel.tone}" aria-label="${esc(name)} tone"></label>
+      <label>Verb <input type="range" data-mix="reverb" min="0" max="1" step="0.01" value="${channel.reverb}" aria-label="${esc(name)} reverb"></label>
+      <div class="strip-flags">
+        <button type="button" class="mute${channel.mute ? " is-on" : ""}" data-mix-mute="${id}" aria-pressed="${channel.mute}">Mute</button>
+        <button type="button" class="mute${channel.solo ? " is-on" : ""}" data-mix-solo="${id}" aria-pressed="${channel.solo}">Solo</button>
+      </div>
+    </div>`;
+  }).join("");
+  return `<section class="mixer" aria-label="Mixer">
+    <div class="mixer-head">
+      <h3>Mixer</h3>
+      <label class="master-fader">Master <input type="range" id="mix-master" min="0" max="1" step="0.01" value="${mixer.master}" aria-label="Master volume"></label>
+    </div>
+    <p class="fine">One channel for each filled chair. Empty core parts share Backing. Tone darkens or drives the channel. Reverb is a shared synthesized room, and a limiter sits on the master. Volume and pan are written into the MIDI; the WAV uses this mix.</p>
+    <div class="strips">${strips}</div>
+  </section>`;
+}
+
+function refreshMixButtons() {
+  const mixer = state.song?.mixer;
+  if (!mixer) return;
+  document.querySelectorAll("[data-mute]").forEach((button) => {
+    const on = !partIsMuted(mixer, button.dataset.mute);
+    button.classList.toggle("is-on", on);
+    button.setAttribute("aria-pressed", String(on));
+    state.mutes[button.dataset.mute] = !on;
+  });
+  document.querySelectorAll("[data-mix-mute]").forEach((button) => {
+    const muted = Boolean(mixer.channels[button.dataset.mixMute]?.mute);
+    button.classList.toggle("is-on", muted);
+    button.setAttribute("aria-pressed", String(muted));
+  });
+  document.querySelectorAll("[data-mix-solo]").forEach((button) => {
+    const solo = Boolean(mixer.channels[button.dataset.mixSolo]?.solo);
+    button.classList.toggle("is-on", solo);
+    button.setAttribute("aria-pressed", String(solo));
+  });
+}
+
+let shareTimer = 0;
+function rememberMix() {
+  window.clearTimeout(shareTimer);
+  shareTimer = window.setTimeout(() => {
+    if (state.song && !isStale()) setHash(state.song);
+  }, 200);
+}
+
+function bindMixer() {
+  const master = document.querySelector("#mix-master");
+  if (!master || !state.song) return;
+  master.addEventListener("input", () => {
+    state.song.mixer.master = Number(master.value);
+    player.setMixer(state.song.mixer);
+    rememberMix();
+  });
+  document.querySelectorAll(".strip input[data-mix]").forEach((input) => {
+    input.addEventListener("input", () => {
+      const id = input.closest("[data-channel]")?.dataset.channel;
+      const channel = state.song.mixer.channels[id];
+      if (!channel) return;
+      channel[input.dataset.mix] = Number(input.value);
+      player.setMixer(state.song.mixer);
+      rememberMix();
+    });
+  });
+  document.querySelectorAll("[data-mix-mute]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const channel = state.song.mixer.channels[button.dataset.mixMute];
+      if (!channel) return;
+      channel.mute = !channel.mute;
+      player.setMixer(state.song.mixer);
+      refreshMixButtons();
+      rememberMix();
+    });
+  });
+  document.querySelectorAll("[data-mix-solo]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const channel = state.song.mixer.channels[button.dataset.mixSolo];
+      if (!channel) return;
+      channel.solo = !channel.solo;
+      player.setMixer(state.song.mixer);
+      refreshMixButtons();
+      rememberMix();
     });
   });
 }
@@ -506,7 +608,7 @@ function makeSeed() {
 }
 
 function setHash(song) {
-  const encoded = encodeShare(song.slots, song.seed);
+  const encoded = encodeShare(song.slots, song.seed, { mixer: song.mixer });
   history.replaceState(null, "", `#bm=${encoded}`);
   return encoded;
 }
@@ -596,7 +698,7 @@ function saveSong() {
   const song = state.song;
   const entry = {
     key: `${song.seed}:${song.signature}`,
-    encoded: encodeShare(song.slots, song.seed),
+    encoded: encodeShare(song.slots, song.seed, { mixer: song.mixer }),
     title: song.title,
     band: song.bandName,
     detail: `${song.tempo} BPM · ${song.key}`,
@@ -640,7 +742,7 @@ function applyShared(encoded) {
   state.roleFilter = first;
   state.song = null;
   player.stop();
-  const song = generateSong(snapshot(state.slots), decoded.seed);
+  const song = withSharedMix(generateSong(snapshot(state.slots), decoded.seed), decoded.mix);
   state.song = song;
   wasStale = false;
   renderSong();
