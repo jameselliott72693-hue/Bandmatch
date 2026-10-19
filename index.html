@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#100e0c">
+  <meta name="description" content="Bandmatch assembles a fantasy lineup of real musicians and imagines an original song they might make.">
+  <title>Bandmatch</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="20" fill="none" stroke="currentColor" stroke-width="2"></circle>
+        <circle cx="24" cy="24" r="6" fill="currentColor"></circle>
+        <path d="M24 4v8M24 36v8M4 24h8M36 24h8" stroke="currentColor" stroke-width="2"></path>
+      </svg>
+      <div>
+        <p class="eyebrow">Fantasy lineups</p>
+        <h1>Bandmatch</h1>
+      </div>
+    </div>
+    <p class="tagline">Assemble a fantasy supergroup of real musicians. Bandmatch imagines an original song that lineup might make, then plays a synthesized demo in the browser.</p>
+  </header>
+
+  <aside class="ethics" role="note">
+    <p><strong>Imagined and original.</strong> These are not real recordings, and the named artists are not involved. Bandmatch never imitates a real voice and never uses real lyrics or melodies.</p>
+  </aside>
+
+  <main>
+    <section class="builder" aria-label="Lineup builder">
+      <div class="lineup-col">
+        <div class="section-head">
+          <h2>Lineup</h2>
+          <div class="head-actions">
+            <button type="button" class="text-btn" id="shuffle">Shuffle</button>
+            <button type="button" class="text-btn" id="clear">Clear</button>
+          </div>
+        </div>
+        <p class="hint" id="lineup-hint"></p>
+        <p class="swap-note" id="swap-note" hidden></p>
+        <div id="slots"></div>
+        <button type="button" class="btn btn-primary btn-block" id="imagine">Imagine a song</button>
+      </div>
+
+      <div class="pool-col">
+        <div class="section-head">
+          <h2>Musicians</h2>
+          <button type="button" class="text-btn" id="add-custom">Custom player</button>
+        </div>
+        <label class="search">
+          <span class="visually-hidden">Search musicians</span>
+          <input id="search" type="search" placeholder="Search by name" autocomplete="off">
+        </label>
+        <div class="filters" id="filters" role="group" aria-label="Filter by role">
+          <button type="button" data-filter="all" aria-pressed="false">All</button>
+          <button type="button" data-filter="singer" aria-pressed="true">Singer</button>
+          <button type="button" data-filter="guitar" aria-pressed="false">Guitar</button>
+          <button type="button" data-filter="bass" aria-pressed="false">Bass</button>
+          <button type="button" data-filter="drums" aria-pressed="false">Drums</button>
+          <button type="button" data-filter="keys" aria-pressed="false">Keys</button>
+        </div>
+        <p class="hint" id="pool-count"></p>
+        <div class="pool" id="pool"></div>
+      </div>
+    </section>
+
+    <section id="song-section" hidden></section>
+
+    <section class="saved" aria-labelledby="saved-heading">
+      <div class="section-head">
+        <h2 id="saved-heading">Saved songs</h2>
+      </div>
+      <div id="favorites"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>Songs stay in this browser until you copy a share link. The link stores the lineup and the seed, not a recording.</p>
+  </footer>
+
+  <div class="mini-player" id="mini-player" hidden>
+    <button type="button" class="btn btn-primary" id="mini-play">Play</button>
+    <button type="button" class="btn" id="mini-stop">Stop</button>
+    <p id="mini-title"></p>
+  </div>
+
+  <dialog id="custom-dialog" aria-labelledby="custom-title">
+    <form id="custom-form">
+      <div class="section-head">
+        <h2 id="custom-title">Custom player</h2>
+        <button type="button" class="text-btn" id="custom-cancel">Close</button>
+      </div>
+      <p class="fine">Traits only tune the imagined arrangement. They are not a biography.</p>
+      <label>Name <input id="custom-name" name="name" maxlength="40" required autocomplete="nickname" placeholder="Stage name"></label>
+      <label>Role
+        <select id="custom-role" name="role">
+          <option value="singer">Singer</option>
+          <option value="guitar">Guitar</option>
+          <option value="bass">Bass</option>
+          <option value="drums">Drums</option>
+          <option value="keys">Keys</option>
+        </select>
+      </label>
+      <fieldset>
+        <legend>Genres, up to three</legend>
+        <div class="checks" id="custom-genres"></div>
+      </fieldset>
+      <div class="form-grid">
+        <label>Tempo
+          <select id="custom-tempo" name="tempo">
+            <option value="slow">Slow</option>
+            <option value="mid" selected>Mid</option>
+            <option value="fast">Fast</option>
+          </select>
+        </label>
+        <label>Feel
+          <select id="custom-feel" name="feel">
+            <option value="straight" selected>Straight</option>
+            <option value="swing">Swing</option>
+          </select>
+        </label>
+        <label>Density
+          <select id="custom-density" name="density">
+            <option value="sparse">Sparse</option>
+            <option value="balanced" selected>Balanced</option>
+            <option value="busy">Busy</option>
+          </select>
+        </label>
+        <label>Weight
+          <select id="custom-weight" name="weight">
+            <option value="light">Light</option>
+            <option value="medium" selected>Medium</option>
+            <option value="heavy">Heavy</option>
+          </select>
+        </label>
+        <label>Tone
+          <select id="custom-tone" name="tone">
+            <option value="clean">Clean</option>
+            <option value="warm" selected>Warm</option>
+            <option value="driven">Driven</option>
+          </select>
+        </label>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block">Add to lineup</button>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p class="ethics">Bandmatch needs JavaScript to build a lineup and play the demo.</p></noscript>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
