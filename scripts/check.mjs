@@ -1,7 +1,8 @@
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
+import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
-import { decodeShare, encodeShare, generateSong, slotSignature } from "../js/song.js";
+import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
 
 const feelOk = {
   swing: (person) => person.swing >= 0.45,
@@ -228,6 +229,28 @@ const right = generateSong(decoded.slots, decoded.seed);
 if (left.title !== right.title || left.tempo !== right.tempo || left.lyrics.chorus.join("|") !== right.lyrics.chorus.join("|")) {
   fail("shared song did not rebuild");
 }
+if (decoded.mix) fail("default mix should stay out of the share link");
+const oldPayload = JSON.parse(Buffer.from(encoded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString());
+if (oldPayload.v !== 1 || oldPayload.mix) fail("share payload grew a mix field");
+const mixed = generateSong(fixed, "k3m9qx");
+mixed.mixer.channels.guitar.volume = 0.4;
+mixed.mixer.channels.guitar.pan = -0.5;
+mixed.mixer.channels.lead.mute = true;
+mixed.mixer.master = 0.6;
+const mixedEncoded = encodeShare(fixed, "k3m9qx", { mixer: mixed.mixer });
+const mixedDecoded = decodeShare(mixedEncoded);
+const restored = withSharedMix(generateSong(mixedDecoded.slots, mixedDecoded.seed), mixedDecoded.mix);
+if (restored.mixer.channels.guitar.volume !== 0.4 || restored.mixer.channels.guitar.pan !== -0.5) {
+  fail("mixer settings did not survive the share link");
+}
+if (!restored.mixer.channels.lead.mute || restored.mixer.master !== 0.6) fail("mute or master did not survive the share link");
+if (compactMixer(defaultMixer(a.roster))) fail("default mixer should compact to nothing");
+const legacy = decodeShare(encoded);
+if (legacy.mix) fail("legacy share should have no mix");
+const legacySong = withSharedMix(generateSong(legacy.slots, legacy.seed), legacy.mix);
+if (JSON.stringify(legacySong.mixer) !== JSON.stringify(defaultMixer(legacySong.roster))) {
+  fail("missing mix did not fall back to the default mixer");
+}
 
 const banned = ["yesterday, all my", "is this the real life", "smells like teen spirit", "stairway to heaven"];
 const blob = `${left.lyrics.verse.join(" ")} ${left.lyrics.chorus.join(" ")} ${a.lyrics.verse.join(" ")}`.toLowerCase();
@@ -310,10 +333,19 @@ try {
   const full = midiTracks(songToMidi(wide));
   const core = midiTracks(songToMidi(a));
   if (full.division !== 480) fail(`midi division ${full.division}`);
-  if (full.tracks !== 8) fail(`octet midi has ${full.tracks} tracks`);
-  if (core.tracks !== 5) fail(`core midi has ${core.tracks} tracks`);
+  if (full.tracks !== 9) fail(`octet midi has ${full.tracks} tracks`);
+  if (core.tracks !== 6) fail(`core midi has ${core.tracks} tracks`);
   if (full.noteOns.slice(1).some((count) => count < 1)) fail(`midi track missing notes ${full.noteOns.join(",")}`);
   if (core.noteOns[0] !== 0) fail("tempo track should not contain notes");
+  const raw = songToMidi(a);
+  let sawVolume = false;
+  let sawPan = false;
+  for (let i = 0; i < raw.length - 2; i += 1) {
+    if ((raw[i] & 0xf0) === 0xb0 && raw[i + 1] === 7) sawVolume = true;
+    if ((raw[i] & 0xf0) === 0xb0 && raw[i + 1] === 10) sawPan = true;
+  }
+  if (!sawVolume || !sawPan) fail("midi is missing volume or pan controllers");
+  if (!a.arrangement.tom?.length || !a.arrangement.crash?.length) fail("arrangement is missing toms or cymbals");
 } catch (error) {
   fail(`midi parse: ${error.message}`);
 }
