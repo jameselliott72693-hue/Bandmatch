@@ -108,6 +108,8 @@ export function createPlayer() {
     origin: 0,
     looping: false,
     loopIndex: 0,
+    crowdOn: false,
+    crowdNodes: null,
     stateHandler: () => {},
     progressHandler: () => {},
     noise: null,
@@ -142,6 +144,48 @@ export function createPlayer() {
       if (this.ctx && this.strips) this.applyMixer();
     },
 
+    setCrowd(on) {
+      this.crowdOn = Boolean(on);
+      if (!this.crowdOn) {
+        this.stopCrowd();
+        return;
+      }
+      if (this.ctx && this.master && this.noise) this.startCrowd();
+    },
+
+    startCrowd() {
+      if (!this.crowdOn || !this.ctx || !this.master || !this.noise || this.crowdNodes) return;
+      const ctx = this.ctx;
+      const source = ctx.createBufferSource();
+      source.buffer = this.noise;
+      source.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 680;
+      const gain = ctx.createGain();
+      gain.gain.value = 0.012;
+      const lfo = ctx.createOscillator();
+      lfo.frequency.value = 0.17;
+      const lfoGain = ctx.createGain();
+      lfoGain.gain.value = 0.004;
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.master);
+      lfo.connect(lfoGain);
+      lfoGain.connect(gain.gain);
+      source.start();
+      lfo.start();
+      this.crowdNodes = { source, lfo };
+    },
+
+    stopCrowd() {
+      const nodes = this.crowdNodes;
+      this.crowdNodes = null;
+      if (!nodes) return;
+      try { nodes.source.stop(); } catch { /* already stopped */ }
+      try { nodes.lfo.stop(); } catch { /* already stopped */ }
+    },
+
     setMute(part, muted) {
       if (!this.mixer) this.mixer = defaultMixer([]);
       setPartMuted(this.mixer, part, muted);
@@ -158,6 +202,7 @@ export function createPlayer() {
       if (!Ctx) throw new Error("This browser cannot start audio.");
       if (this.ctx) {
         const old = this.ctx;
+        this.stopCrowd();
         this.ctx = null;
         try {
           await old.close();
@@ -172,6 +217,7 @@ export function createPlayer() {
       if (token !== this.token) return;
       this.origin = this.ctx.currentTime + 0.06 - this.position;
       this.cursor = lowerBound(this.events, this.position);
+      if (this.crowdOn) this.startCrowd();
       this.playing = true;
       this.stateHandler(true);
       this.emitProgress(this.position);

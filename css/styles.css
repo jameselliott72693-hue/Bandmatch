@@ -700,6 +700,32 @@ code {
 
 .band-hero figcaption { color: var(--faint); font-size: 0.8rem; margin-top: 6px; }
 
+.live-set {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(420px 180px at 0% 0%, rgba(255, 106, 69, 0.18), transparent 60%),
+    var(--raise-solid);
+  margin-bottom: 18px;
+}
+
+.live-set h2 { margin: 4px 0 12px; font-size: clamp(2.1rem, 7vw, 3.6rem); line-height: 0.95; }
+
+.live-meter {
+  height: 8px;
+  margin: 14px 0;
+  border-radius: 99px;
+  background: rgba(246, 236, 224, 0.12);
+  overflow: hidden;
+}
+
+.live-meter span { display: block; height: 100%; width: 0; background: var(--coral); }
+
+.live-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.live-actions .btn.is-on { border-color: var(--gold); color: var(--gold); }
+
 .suggestions { margin-top: 18px; }
 
 .suggestions h3 { margin-top: 0; }
@@ -735,7 +761,8 @@ code {
 body.is-gallery .builder,
 body.is-gallery .saved,
 body.is-gallery #band-section,
-body.is-gallery #song-section { display: none; }
+body.is-gallery #song-section,
+body.is-gallery #live-section { display: none; }
 
 .gallery-page { display: grid; gap: 22px; }
 
