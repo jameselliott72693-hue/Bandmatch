@@ -9,6 +9,7 @@ import { zipStore } from "../js/zip.js";
 import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
+import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
   swing: (person) => person.swing >= 0.45,
@@ -576,6 +577,37 @@ if (classic.slots.singer?.name !== "Aretha Franklin" || classic.slots.guitar?.na
 if (classic.slots.bass?.id !== "bootsy-collins" || classic.slots.drums?.id !== "questlove") {
   fail("an older share link changed a musician id");
 }
+
+const before = JSON.stringify(fixed);
+const ideas = suggestLineup(fixed, MUSICIANS, 4);
+if (JSON.stringify(fixed) !== before) fail("suggestions changed the lineup");
+if (!ideas.length) fail("expected suggestions for an open chair");
+const seatedIds = new Set(Object.values(fixed).filter(Boolean).map((person) => person.id));
+ideas.forEach((idea) => {
+  if (seatedIds.has(idea.id)) fail(`suggested ${idea.name}, who is already seated`);
+  if (fixed[idea.role]) fail(`suggested the filled ${idea.role} chair`);
+  if (!idea.reason || idea.reason.includes("\n")) fail(`suggestion reason was not one line: ${idea.reason}`);
+  const person = MUSICIANS.find((item) => item.id === idea.id);
+  if (!person?.roles.includes(idea.role)) fail(`${idea.name} was suggested for ${idea.role}`);
+});
+const ideasAgain = suggestLineup(fixed, MUSICIANS, 4);
+if (ideas.map((idea) => idea.id).join() !== ideasAgain.map((idea) => idea.id).join()) fail("suggestions were not deterministic");
+const starters = suggestLineup(lineup({}), MUSICIANS, 4);
+if (starters.length !== 4) fail(`empty lineup returned ${starters.length} suggestions`);
+const full = lineup({
+  singer: "aretha-franklin",
+  guitar: "nile-rodgers",
+  bass: "james-jamerson",
+  drums: "clyde-stubblefield",
+  keys: "stevie-wonder",
+});
+full.horns = MUSICIANS.find((person) => person.id === "miles-davis");
+full.dj = MUSICIANS.find((person) => person.id === "j-dilla");
+full.strings = MUSICIANS.find((person) => person.id === "yo-yo-ma");
+if (suggestLineup(full, MUSICIANS, 4).length !== 0) fail("a full lineup was still offered a chair");
+const heavy = suggestLineup(lineup({ guitar: "tony-iommi", bass: "cliff-burton" }), MUSICIANS, 4);
+const drumIdea = heavy.find((idea) => idea.role === "drums");
+if (!drumIdea || !drumIdea.reason.toLowerCase().includes("metal")) fail(`metal lineup suggestion was ${drumIdea?.reason}`);
 
 const versionOrigin = generateSong(fixed, "k3m9qx");
 const slowerSong = performSong(versionOrigin, { ...draftFromSong(versionOrigin), tempo: 90 });
