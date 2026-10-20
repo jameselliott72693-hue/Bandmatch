@@ -8,6 +8,7 @@ import {
   roleLabel,
 } from "./musicians.js";
 import { imaginedBio, planAlbum } from "./band.js";
+import { BANDS_KEY, bandRecord, featuredBands, forgetBand, rememberBand } from "./gallery.js";
 import { drawCover, drawMark } from "./cover.js";
 import {
   KEY_OPTIONS,
@@ -25,6 +26,7 @@ import {
   setMode,
   transposeDraft,
 } from "./edit.js";
+import { VERSIONS_KEY, compareDrafts, forgetVersion, listVersions, saveVersion, versionKey } from "./versions.js";
 import { CHANNEL_LABEL, channelOrder, partIsMuted, setPartMuted } from "./mixer.js";
 import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
@@ -48,9 +50,13 @@ const state = {
   history: [],
   future: [],
   editMarked: false,
+  versionName: "",
+  versionStore: loadVersionStore(),
   band: null,
   bandTrack: null,
   playAll: false,
+  gallery: false,
+  bands: loadBands(),
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -95,8 +101,34 @@ function loadFavorites() {
   }
 }
 
+function loadBands() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BANDS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed.filter((item) => item && item.encoded && item.bandName) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistBands() {
+  localStorage.setItem(BANDS_KEY, JSON.stringify(state.bands.slice(0, 24)));
+}
+
 function persistFavorites() {
   localStorage.setItem(FAVORITES_KEY, JSON.stringify(state.favorites.slice(0, 30)));
+}
+
+function loadVersionStore() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(VERSIONS_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistVersionStore() {
+  localStorage.setItem(VERSIONS_KEY, JSON.stringify(state.versionStore));
 }
 
 function toast(message) {
@@ -451,6 +483,43 @@ function mixerMarkup(song) {
   </section>`;
 }
 
+function currentVersions() {
+  if (!state.song) return [];
+  return listVersions(state.versionStore, versionKey(state.song.signature, state.song.seed));
+}
+
+function versionsMarkup(song) {
+  const versions = currentVersions();
+  const options = [`<option value="">Original imagined song</option>`]
+    .concat(versions.map((version) => `<option value="${esc(version.id)}">${esc(version.name)}</option>`))
+    .join("");
+  const items = versions.length
+    ? versions.map((version) => `<li>
+        <strong>${esc(version.name)}</strong>
+        <button type="button" class="btn" data-version-open="${esc(version.id)}">Switch</button>
+        <button type="button" class="btn" data-version-share="${esc(version.id)}">Share</button>
+        <button type="button" class="text-btn" data-version-forget="${esc(version.id)}">Remove</button>
+      </li>`).join("")
+    : `<li class="fine">No named versions yet.</li>`;
+  const opened = state.versionName ? `<p class="fine">This sheet is the shared version “${esc(state.versionName)}”.</p>` : "";
+  return `<div class="versions">
+    <h3>Versions</h3>
+    <p class="fine">Save named copies of this edited sheet on this device. Share keeps that one edit in a link. The original imagined song stays available.</p>
+    ${opened}
+    <form class="version-form" id="version-form">
+      <label>Name <input id="version-name" maxlength="40" placeholder="Slower chorus" aria-label="Version name" required></label>
+      <button type="submit" class="btn">Save version</button>
+    </form>
+    <ul class="version-list">${items}</ul>
+    <div class="version-compare">
+      <label>Compare <select id="compare-a" aria-label="First version">${options}</select></label>
+      <label>with <select id="compare-b" aria-label="Second version">${options}</select></label>
+      <button type="button" class="btn" id="compare-versions">Compare</button>
+    </div>
+    <div id="compare-out"></div>
+  </div>`;
+}
+
 function editorMarkup(song) {
   const spellOf = (name) => (name.includes("b") ? "flat" : "sharp");
   const keyChoices = KEY_OPTIONS.map((name) => {
@@ -498,6 +567,7 @@ function editorMarkup(song) {
       </div>
     </div>
     <p class="fine">Changes play right away. Chords are written as symbols, like Am7 D G. Reset puts back the song Bandmatch first imagined for this lineup and seed.</p>
+    ${versionsMarkup(song)}
     <div class="edit-bar">
       <label>Tempo <input id="edit-tempo" type="number" min="40" max="220" value="${song.tempo}" aria-label="Tempo"></label>
       <label>Key <select id="edit-key" aria-label="Key">${keys}</select></label>
@@ -525,6 +595,7 @@ function refreshHistoryButtons() {
 
 function noteEdit() {
   if (state.editMarked || !state.song) return;
+  state.versionName = "";
   state.history.push(cloneSong(state.song));
   if (state.history.length > 30) state.history.shift();
   state.future = [];
@@ -536,6 +607,7 @@ function shareExtra(song) {
   return {
     mixer: song.mixer,
     edit: state.originSong ? compactEdit(song, state.originSong) : null,
+    versionName: state.versionName || "",
   };
 }
 
@@ -737,6 +809,110 @@ function bindEditor() {
       noteEdit();
       applyDraft(draft, true);
     });
+  });
+  bindVersions();
+}
+
+function draftForEdit(edit) {
+  return expandEdit(state.originSong, edit || null);
+}
+
+function openVersion(edit, name) {
+  if (!state.originSong) return;
+  const song = performSong(state.originSong, draftForEdit(edit));
+  song.mixer = state.song?.mixer || song.mixer;
+  state.versionName = name || "";
+  state.history = [];
+  state.future = [];
+  installSong(song);
+  setHash(song);
+  toast(name ? `Switched to ${name}.` : "Back to the original imagined song.");
+}
+
+async function copyText(link, message) {
+  try {
+    await navigator.clipboard.writeText(link);
+    toast(message);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = link;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+    toast(message);
+  }
+}
+
+function bindVersions() {
+  const form = document.querySelector("#version-form");
+  if (!form || !state.song) return;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const name = document.querySelector("#version-name").value;
+    const edit = state.originSong ? compactEdit(state.song, state.originSong) : null;
+    const key = versionKey(state.song.signature, state.song.seed);
+    const result = saveVersion(state.versionStore, key, name, edit);
+    if (result.error) {
+      toast(result.error);
+      return;
+    }
+    state.versionStore = result.store;
+    state.versionName = result.version.name;
+    try {
+      persistVersionStore();
+    } catch {
+      toast("This browser couldn't store that version.");
+      return;
+    }
+    setHash(state.song);
+    renderSong();
+    toast(`Saved version ${result.version.name}.`);
+  });
+  document.querySelectorAll("[data-version-open]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const version = currentVersions().find((item) => item.id === button.dataset.versionOpen);
+      if (version) openVersion(version.edit, version.name);
+    });
+  });
+  document.querySelectorAll("[data-version-share]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const version = currentVersions().find((item) => item.id === button.dataset.versionShare);
+      if (!version || !state.song) return;
+      const encoded = encodeShare(state.song.slots, state.song.seed, {
+        mixer: state.song.mixer,
+        edit: version.edit,
+        versionName: version.name,
+      });
+      const link = `${location.origin}${location.pathname}${location.search}#bm=${encoded}`;
+      copyText(link, `Link copied for ${version.name}.`);
+    });
+  });
+  document.querySelectorAll("[data-version-forget]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = versionKey(state.song.signature, state.song.seed);
+      state.versionStore = forgetVersion(state.versionStore, key, button.dataset.versionForget);
+      try {
+        persistVersionStore();
+      } catch {
+        toast("This browser couldn't update versions.");
+      }
+      renderSong();
+    });
+  });
+  document.querySelector("#compare-versions")?.addEventListener("click", () => {
+    const versions = currentVersions();
+    const pick = (id) => (id ? versions.find((item) => item.id === id)?.edit || null : null);
+    const left = draftForEdit(pick(document.querySelector("#compare-a").value));
+    const right = draftForEdit(pick(document.querySelector("#compare-b").value));
+    const rows = compareDrafts(left, right);
+    const out = document.querySelector("#compare-out");
+    out.innerHTML = `<table class="compare-table">
+      <thead><tr><th></th><th>${esc(document.querySelector("#compare-a").selectedOptions[0].textContent)}</th><th>${esc(document.querySelector("#compare-b").selectedOptions[0].textContent)}</th></tr></thead>
+      <tbody>
+        ${rows.map((row) => `<tr class="${row.same ? "" : "is-different"}"><th>${esc(row.label)}</th><td>${esc(row.left)}</td><td>${esc(row.right)}</td></tr>`).join("")}
+      </tbody>
+    </table>`;
   });
 }
 
@@ -985,6 +1161,8 @@ function imagine(forcedSeed) {
   }
   player.stop();
   state.playAll = false;
+  state.versionName = "";
+  hideGallery();
   state.band = null;
   state.bandTrack = null;
   if (bandSection) {
@@ -1119,6 +1297,7 @@ function applyShared(encoded) {
   state.history = [];
   state.future = [];
   state.editMarked = false;
+  state.versionName = decoded.versionName || "";
   let sharedEdit = decoded.edit;
   if (!sharedEdit && decoded.editHash) {
     try {
@@ -1337,6 +1516,7 @@ function writeBandHash() {
 
 function openBand(slots, seed, track) {
   player.stop();
+  hideGallery();
   state.playAll = false;
   const album = planAlbum(snapshot(slots), seed);
   state.band = album;
@@ -1422,6 +1602,7 @@ function renderBand() {
       <div class="band-actions">
         <button type="button" class="btn btn-primary" id="play-all">Play all</button>
         <button type="button" class="btn" id="copy-band">Copy link</button>
+        <button type="button" class="btn" id="save-band">Save to My bands</button>
         <button type="button" class="btn" id="download-album">Download album ZIP</button>
         <button type="button" class="btn" id="close-band">Back to the lineup</button>
       </div>
@@ -1435,6 +1616,7 @@ function renderBand() {
     openTrack(0, true);
   });
   document.querySelector("#copy-band").addEventListener("click", copyBandLink);
+  document.querySelector("#save-band").addEventListener("click", saveCurrentBand);
   document.querySelector("#download-album").addEventListener("click", downloadAlbum);
   document.querySelector("#download-album-cover").addEventListener("click", () => {
     document.querySelector("#album-cover").toBlob((blob) => {
@@ -1511,8 +1693,153 @@ async function downloadAlbum() {
   }
 }
 
+function hideGallery() {
+  state.gallery = false;
+  document.body.classList.remove("is-gallery");
+  const section = document.querySelector("#gallery-section");
+  if (!section) return;
+  section.hidden = true;
+  section.innerHTML = "";
+}
+
+function galleryCard(card, index) {
+  const album = card.album;
+  const song = album.tracks[0];
+  const tracks = album.tracks.slice(0, 3).map((track) => esc(track.title)).join(" · ");
+  const more = album.tracks.length > 3 ? ` · +${album.tracks.length - 3}` : "";
+  return `<article class="gallery-card">
+    <canvas id="gallery-mark-${index}" width="800" height="800" aria-label="Imagined logo for ${esc(album.bandName)}"></canvas>
+    <div>
+      <p class="eyebrow">${card.sample ? "Sample" : "Saved on this device"}</p>
+      <h3>${esc(album.bandName)}</h3>
+      <p class="genre">${esc(album.albumTitle)} · ${album.tracks.length} imagined tracks</p>
+      <p>${esc(card.note || song.blend || "")}</p>
+      <div class="roster">
+        ${song.roster.map((entry) => `<span><em>${esc(ROLE_LABEL[entry.role])}</em> ${esc(entry.name)}</span>`).join("")}
+      </div>
+      <p class="fine">${tracks}${more}</p>
+      <div class="gallery-actions">
+        <button type="button" class="btn btn-primary" data-open-gallery="${index}">Open band page</button>
+        <button type="button" class="btn" data-copy-gallery="${index}">Copy link</button>
+        ${card.sample ? "" : `<button type="button" class="btn" data-forget-gallery="${index}">Remove</button>`}
+      </div>
+    </div>
+  </article>`;
+}
+
+function renderGallery() {
+  const section = document.querySelector("#gallery-section");
+  if (!section) return;
+  const samples = featuredBands();
+  const saved = [];
+  state.bands.forEach((record) => {
+    try {
+      const decoded = decodeShare(record.encoded);
+      const album = planAlbum(decoded.slots, decoded.seed);
+      saved.push({
+        sample: false,
+        note: "Saved in this browser. Someone else opens it with the share link, not an account.",
+        album,
+        encoded: record.encoded,
+      });
+    } catch {
+      /* drop a band this browser can no longer read */
+    }
+  });
+  state.galleryCards = [...samples, ...saved];
+  const sampleMarkup = samples.map((card, index) => galleryCard(card, index)).join("");
+  const savedMarkup = saved.length
+    ? saved.map((card, index) => galleryCard(card, samples.length + index)).join("")
+    : `<p class="empty">No saved bands yet. Open a band page and choose Save to My bands. It stays on this device.</p>`;
+  section.hidden = false;
+  section.innerHTML = `<div class="gallery-page" id="gallery-page">
+    <div class="section-head">
+      <h2>Gallery</h2>
+      <button type="button" class="text-btn" id="close-gallery">Back to the lineup</button>
+    </div>
+    <p class="ethics"><strong>Imagined and original.</strong> Sample bands are not real groups. Named artists are not involved. Bandmatch never imitates a real voice and never uses real lyrics or melodies. Sharing a band is still a link.</p>
+    <h3>Sample bands</h3>
+    <div class="gallery-grid">${sampleMarkup}</div>
+    <h3>My bands</h3>
+    <p class="fine">Albums you save from a band page. There is no account and no server.</p>
+    <div class="gallery-grid">${savedMarkup}</div>
+  </div>`;
+  state.galleryCards.forEach((card, index) => {
+    const canvas = document.querySelector(`#gallery-mark-${index}`);
+    if (canvas) drawMark(canvas, card.album.tracks[0]);
+  });
+  document.querySelector("#close-gallery").addEventListener("click", leaveGallery);
+  section.querySelectorAll("[data-open-gallery]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = state.galleryCards[Number(button.dataset.openGallery)];
+      if (!card) return;
+      const decoded = decodeShare(card.encoded);
+      openBand(decoded.slots, decoded.seed, null);
+    });
+  });
+  section.querySelectorAll("[data-copy-gallery]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const card = state.galleryCards[Number(button.dataset.copyGallery)];
+      if (!card) return;
+      const link = `${location.origin}${location.pathname}${location.search}#band=${card.encoded}`;
+      try {
+        await navigator.clipboard.writeText(link);
+        toast("Band link copied.");
+      } catch {
+        toast(link);
+      }
+    });
+  });
+  section.querySelectorAll("[data-forget-gallery]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = state.galleryCards[Number(button.dataset.forgetGallery)];
+      if (!card) return;
+      state.bands = forgetBand(state.bands, card.encoded);
+      try {
+        persistBands();
+      } catch {
+        toast("This browser couldn't update My bands.");
+      }
+      renderGallery();
+    });
+  });
+}
+
+function showGallery() {
+  state.gallery = true;
+  document.body.classList.add("is-gallery");
+  renderGallery();
+  document.querySelector("#gallery-page")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
+function leaveGallery() {
+  hideGallery();
+  if (state.band) writeBandHash();
+  else if (state.song) setHash(state.song);
+  else history.pushState(null, "", location.pathname + location.search);
+}
+
+function saveCurrentBand() {
+  if (!state.band) return;
+  const encoded = bandCode(state.band);
+  state.bands = rememberBand(state.bands, bandRecord(state.band, encoded));
+  try {
+    persistBands();
+  } catch {
+    toast("This browser couldn't store that band.");
+    return;
+  }
+  toast("Saved in My bands on this device.");
+}
+
 function readRoute() {
   const hash = location.hash;
+  if (hash === "#gallery") {
+    render();
+    showGallery();
+    return;
+  }
+  hideGallery();
   const band = hash.match(/(?:^#|[?&])band=([^&]+)/);
   const track = hash.match(/(?:^#|&)t=(\d+)/);
   const song = hash.match(/(?:^#|[?&])bm=([^&]+)/);
@@ -1543,6 +1870,7 @@ function readRoute() {
 }
 
 readRoute();
+window.addEventListener("hashchange", () => readRoute());
 
 document.querySelector("#custom-genres").innerHTML = GENRE_IDS.map((genre) => `
   <label class="check"><input type="checkbox" name="genre" value="${genre}"><span>${esc(GENRE_LABEL[genre])}</span></label>

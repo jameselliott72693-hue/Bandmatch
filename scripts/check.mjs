@@ -1,7 +1,9 @@
+import { BAND_LIMIT, featuredBands, forgetBand, rememberBand } from "../js/gallery.js";
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
 import { imaginedBio, planAlbum } from "../js/band.js";
 import { compactEdit, draftFromSong, expandEdit, performSong } from "../js/edit.js";
+import { compareDrafts, forgetVersion, listVersions, saveVersion, versionKey } from "../js/versions.js";
 import { styleFor } from "../js/styles.js";
 import { zipStore } from "../js/zip.js";
 import { compactMixer, defaultMixer } from "../js/mixer.js";
@@ -606,6 +608,82 @@ if (suggestLineup(full, MUSICIANS, 4).length !== 0) fail("a full lineup was stil
 const heavy = suggestLineup(lineup({ guitar: "tony-iommi", bass: "cliff-burton" }), MUSICIANS, 4);
 const drumIdea = heavy.find((idea) => idea.role === "drums");
 if (!drumIdea || !drumIdea.reason.toLowerCase().includes("metal")) fail(`metal lineup suggestion was ${drumIdea?.reason}`);
+
+const versionOrigin = generateSong(fixed, "k3m9qx");
+const slowerSong = performSong(versionOrigin, { ...draftFromSong(versionOrigin), tempo: 90 });
+const fasterDraft = draftFromSong(versionOrigin);
+fasterDraft.tempo = 140;
+fasterDraft.timeSignature = "7/8";
+const fasterSong = performSong(versionOrigin, fasterDraft);
+const slowerEdit = compactEdit(slowerSong, versionOrigin);
+const fasterEdit = compactEdit(fasterSong, versionOrigin);
+const vkey = versionKey(versionOrigin.signature, versionOrigin.seed);
+let versionStore = saveVersion({}, vkey, "Slower", slowerEdit).store;
+versionStore = saveVersion(versionStore, vkey, "Slower", slowerEdit).store;
+if (listVersions(versionStore, vkey).length !== 1) fail("a version name did not replace the older copy");
+versionStore = saveVersion(versionStore, vkey, "Faster", fasterEdit).store;
+if (listVersions(versionStore, vkey).map((item) => item.name).join(",") !== "Faster,Slower") fail("versions were not listed newest first");
+const compared = compareDrafts(expandEdit(versionOrigin, slowerEdit), expandEdit(versionOrigin, fasterEdit));
+const tempoRow = compared.find((row) => row.label === "Tempo");
+const meterRow = compared.find((row) => row.label === "Meter");
+if (!tempoRow || tempoRow.same || tempoRow.left !== "90 BPM" || tempoRow.right !== "140 BPM") fail("version compare missed the tempo");
+if (!meterRow || meterRow.same) fail("version compare missed the meter");
+if (compared.some((row) => row.label.includes("\n"))) fail("version compare was not one line per row");
+versionStore = forgetVersion(versionStore, vkey, listVersions(versionStore, vkey)[0].id);
+if (listVersions(versionStore, vkey).some((item) => item.name === "Faster")) fail("version was not removed");
+const named = encodeShare(fixed, "k3m9qx", { edit: slowerEdit, versionName: "Slower" });
+const namedDecoded = decodeShare(named);
+if (namedDecoded.versionName !== "Slower" || namedDecoded.edit?.t !== 90) fail("a shared version did not keep its name and edit");
+const played = performSong(versionOrigin, expandEdit(versionOrigin, namedDecoded.edit));
+if (played.tempo !== 90) fail("a shared version did not play back at its tempo");
+if (decodeShare(encodeShare(fixed, "k3m9qx")).versionName) fail("an edit-free share grew a version name");
+let crowded = {};
+for (let n = 0; n < 14; n += 1) crowded = saveVersion(crowded, vkey, `Take ${n}`, slowerEdit).store;
+if (listVersions(crowded, vkey).length !== 12) fail("version list did not cap at 12");
+
+const samples = featuredBands();
+const samplesAgain = featuredBands();
+if (samples.length < 4) fail(`expected sample bands, found ${samples.length}`);
+samples.forEach((card, index) => {
+  if (!card.album?.bandName || card.album.tracks.length < 3 || card.album.tracks.length > 6) {
+    fail(`sample ${card.id} is not an album`);
+  }
+  if (card.album.bandName !== samplesAgain[index].album.bandName || card.album.albumTitle !== samplesAgain[index].album.albumTitle) {
+    fail(`sample ${card.id} was not deterministic`);
+  }
+  const restored = decodeShare(card.encoded);
+  if (restored.seed !== card.album.seed) fail(`sample ${card.id} seed changed`);
+  const again = planAlbum(restored.slots, restored.seed);
+  if (again.bandName !== card.album.bandName || again.tracks[0].title !== card.album.tracks[0].title) {
+    fail(`sample ${card.id} link did not restore the band`);
+  }
+});
+let savedBands = rememberBand([], {
+  bandName: samples[0].album.bandName,
+  albumTitle: samples[0].album.albumTitle,
+  encoded: samples[0].encoded,
+  savedAt: 1,
+});
+savedBands = rememberBand(savedBands, {
+  bandName: "Other Room",
+  albumTitle: "Paper",
+  encoded: "other-band",
+  savedAt: 2,
+});
+savedBands = rememberBand(savedBands, {
+  bandName: samples[0].album.bandName,
+  albumTitle: samples[0].album.albumTitle,
+  encoded: samples[0].encoded,
+  savedAt: 3,
+});
+if (savedBands.length !== 2 || savedBands[0].encoded !== samples[0].encoded) fail("My bands did not keep a single copy");
+savedBands = forgetBand(savedBands, samples[0].encoded);
+if (savedBands.some((item) => item.encoded === samples[0].encoded)) fail("saved band was not removed");
+let capped = [];
+for (let n = 0; n < 40; n += 1) {
+  capped = rememberBand(capped, { bandName: `Band ${n}`, albumTitle: "Album", encoded: `enc${n}`, savedAt: n });
+}
+if (capped.length !== BAND_LIMIT) fail(`My bands kept ${capped.length}`);
 
 if (failures.length) {
   console.error(failures.join("\n"));
