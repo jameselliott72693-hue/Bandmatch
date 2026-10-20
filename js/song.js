@@ -792,6 +792,7 @@ export function encodeShare(slots, seed, extra) {
   const mix = extra?.mix || (extra?.mixer ? compactMixer(extra.mixer) : null);
   if (mix) payload.mix = mix;
   if (extra?.edit) payload.ed = extra.edit;
+  if (extra?.versionName) payload.vn = String(extra.versionName).slice(0, 40);
   let packed = packText(JSON.stringify(payload));
   if (packed.length > 4800 && payload.ed) {
     const editHash = hashString(JSON.stringify(payload.ed)).toString(36);
@@ -846,6 +847,7 @@ export function decodeShare(encoded) {
     mix: payload.mix || null,
     edit: payload.ed || null,
     editHash: payload.eh || null,
+    versionName: typeof payload.vn === "string" ? payload.vn.slice(0, 40) : "",
   };
 }
 
