@@ -708,6 +708,29 @@ code {
   background: var(--raise);
 }
 
+.site-links { margin: 8px 0 0; }
+
+.site-links a { text-decoration: none; }
+
+body.is-gallery .builder,
+body.is-gallery .saved,
+body.is-gallery #band-section,
+body.is-gallery #song-section { display: none; }
+
+.gallery-page { display: grid; gap: 22px; }
+
+.gallery-grid { display: grid; gap: 14px; }
+
+.gallery-card {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--raise);
+}
+
 .versions h3 { margin-top: 0; }
 
 .version-form,
@@ -742,6 +765,25 @@ code {
 }
 
 .compare-table tr.is-different td { color: var(--gold); }
+
+.gallery-card canvas {
+  width: 96px;
+  height: 96px;
+  border-radius: 12px;
+  display: block;
+}
+
+.gallery-card h3 { margin: 4px 0; }
+
+.gallery-card .roster { margin: 8px 0; }
+
+.gallery-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+.gallery-actions .btn { min-height: 40px; padding: 8px 12px; }
+
+@media (min-width: 800px) {
+  .gallery-grid { grid-template-columns: 1fr 1fr; }
+}
 
 @media (min-width: 860px) {
   .band-hero { grid-template-columns: 160px minmax(0, 1fr) 200px; align-items: start; }
