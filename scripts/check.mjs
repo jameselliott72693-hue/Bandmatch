@@ -1,6 +1,7 @@
 import { BAND_LIMIT, featuredBands, forgetBand, rememberBand } from "../js/gallery.js";
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
+import { addTrack, albumPayload, buildAlbum, freshTrackSeed, moveTrack, removeTrack, renameAlbum } from "../js/album.js";
 import { imaginedBio, planAlbum } from "../js/band.js";
 import { compactEdit, draftFromSong, expandEdit, performSong } from "../js/edit.js";
 import { compareDrafts, forgetVersion, listVersions, saveVersion, versionKey } from "../js/versions.js";
@@ -689,6 +690,55 @@ for (let n = 0; n < 40; n += 1) {
   capped = rememberBand(capped, { bandName: `Band ${n}`, albumTitle: "Album", encoded: `enc${n}`, savedAt: n });
 }
 if (capped.length !== BAND_LIMIT) fail(`My bands kept ${capped.length}`);
+
+const plannedAlbum = buildAlbum(fixed, "k3m9qx");
+const plannedDirect = planAlbum(fixed, "k3m9qx");
+if (plannedAlbum.custom || albumPayload(plannedAlbum)) fail("an untouched album was treated as edited");
+if (plannedAlbum.albumTitle !== plannedDirect.albumTitle || plannedAlbum.tracks.map((track) => track.seed).join() !== plannedDirect.tracks.map((track) => track.seed).join()) {
+  fail("the default album no longer matches the planned one");
+}
+if (decodeShare(encodeShare(fixed, "k3m9qx")).album) fail("a song share grew an album");
+const renamedAlbum = renameAlbum(plannedAlbum, "  Paper <Room>  ");
+if (renamedAlbum.albumTitle !== "Paper Room" || renamedAlbum.bandName !== plannedAlbum.bandName || !renamedAlbum.custom) fail("album rename failed");
+const movedAlbum = moveTrack(renamedAlbum, 0, 1);
+if (movedAlbum.tracks[1].seed !== renamedAlbum.tracks[0].seed || movedAlbum.tracks[0].seed !== renamedAlbum.tracks[1].seed) fail("album move failed");
+const shorterAlbum = removeTrack(movedAlbum, 0);
+if (shorterAlbum.tracks.length !== movedAlbum.tracks.length - 1) fail("album track was not removed");
+if (removeTrack({ ...shorterAlbum, tracks: [shorterAlbum.tracks[0]] }, 0).tracks.length !== 1) fail("the last album track was removed");
+let n = 0;
+const extraSeed = freshTrackSeed(shorterAlbum, () => {
+  n += 1;
+  return ((n * 17) % 97) / 97;
+});
+const longerAlbum = addTrack(shorterAlbum, generateSong(fixed, extraSeed));
+if (!longerAlbum.tracks.some((track) => track.seed === extraSeed)) fail("album track was not added");
+if (addTrack(longerAlbum, longerAlbum.tracks[0]).tracks.length !== longerAlbum.tracks.length) fail("a duplicate track was added");
+let cappedAlbum = plannedAlbum;
+for (let i = 0; i < 12; i += 1) {
+  const seed = freshTrackSeed(cappedAlbum, () => {
+    n += 1;
+    return ((n * 13) % 89) / 89;
+  });
+  if (seed) cappedAlbum = addTrack(cappedAlbum, generateSong(fixed, seed));
+}
+if (cappedAlbum.tracks.length !== 8) fail(`album cap was ${cappedAlbum.tracks.length}`);
+const albumPacked = encodeShare(fixed, plannedAlbum.seed, { album: albumPayload(renamedAlbum) });
+const albumDecoded = decodeShare(albumPacked);
+const albumRestored = buildAlbum(albumDecoded.slots, albumDecoded.seed, albumDecoded.album);
+if (albumDecoded.slots.singer?.id !== "aretha-franklin" || albumRestored.albumTitle !== "Paper Room") fail("album share lost the lineup or title");
+if (albumRestored.tracks.map((track) => track.title).join("|") !== renamedAlbum.tracks.map((track) => track.title).join("|")) {
+  fail("album share did not restore the tracklist");
+}
+if (renameAlbum(renamedAlbum, plannedAlbum.albumTitle).custom) fail("restoring the original title left the album edited");
+const classicAlbum = buildAlbum(classic.slots, classic.seed, classic.album);
+const classicPlan = planAlbum(classic.slots, classic.seed);
+if (classic.album || classicAlbum.bandName !== classicPlan.bandName || classicAlbum.tracks[0].title !== classicPlan.tracks[0].title) {
+  fail("an old share no longer opens the same album");
+}
+const messyAlbum = buildAlbum(fixed, "k3m9qx", { at: "Room", tr: ["nope!", "abc123", "abc123", "zzzzzz"] });
+if (messyAlbum.albumTitle !== "Room" || messyAlbum.tracks.map((track) => track.seed).join() !== "abc123,zzzzzz") {
+  fail("album codes kept a bad or repeated seed");
+}
 
 if (failures.length) {
   console.error(failures.join("\n"));

@@ -7,7 +7,8 @@ import {
   createCustomMusician,
   roleLabel,
 } from "./musicians.js";
-import { imaginedBio, planAlbum } from "./band.js";
+import { addTrack, albumPayload, buildAlbum, coverSong, freshTrackSeed, moveTrack, removeTrack, renameAlbum, TRACK_MAX } from "./album.js";
+import { imaginedBio } from "./band.js";
 import { BANDS_KEY, bandRecord, featuredBands, forgetBand, rememberBand } from "./gallery.js";
 import { drawCover, drawMark } from "./cover.js";
 import {
@@ -1519,7 +1520,7 @@ document.addEventListener("keydown", (event) => {
 window.addEventListener("resize", updateChrome);
 
 function bandCode(album) {
-  return encodeShare(album.tracks[0].slots, album.seed);
+  return encodeShare(album.tracks[0].slots, album.seed, { album: albumPayload(album) });
 }
 
 function writeBandHash() {
@@ -1616,12 +1617,12 @@ function renderLive() {
   document.querySelector("#live-leave").addEventListener("click", () => leaveLiveSet(true));
 }
 
-function openBand(slots, seed, track) {
+function openBand(slots, seed, track, albumCode) {
   player.stop();
   leaveLiveSet(false);
   hideGallery();
   state.playAll = false;
-  const album = planAlbum(snapshot(slots), seed);
+  const album = buildAlbum(snapshot(slots), seed, albumCode);
   state.band = album;
   const index = Number.isInteger(track) && album.tracks[track] ? track : null;
   state.bandTrack = index;
@@ -1676,7 +1677,10 @@ function renderBand() {
   const tracks = album.tracks.map((track, index) => `
     <li class="${index === state.bandTrack ? "is-current" : ""}">
       <button type="button" data-track="${index}"><strong>${index + 1}. ${esc(track.title)}</strong><span>${track.tempo} BPM · ${esc(track.key)} · ${esc(track.durationLabel)}</span></button>
-      <button type="button" data-track-midi="${index}">MIDI</button>
+      <button type="button" class="track-side" data-track-up="${index}" ${index === 0 ? "disabled" : ""}>Up</button>
+      <button type="button" class="track-side" data-track-down="${index}" ${index === album.tracks.length - 1 ? "disabled" : ""}>Down</button>
+      <button type="button" class="track-side" data-track-remove="${index}" ${album.tracks.length <= 1 ? "disabled" : ""}>Remove</button>
+      <button type="button" class="track-side" data-track-midi="${index}">MIDI</button>
     </li>`).join("");
   bandSection.innerHTML = `
     <div class="band-page" id="band-page">
@@ -1694,7 +1698,7 @@ function renderBand() {
           <div class="roster">
             ${song.roster.map((entry) => `<span><em>${esc(ROLE_LABEL[entry.role])}</em> ${esc(entry.name)}</span>`).join("")}
           </div>
-          <h3>${esc(album.albumTitle)}</h3>
+          <label class="album-title">Album title <input id="album-title" maxlength="48" value="${esc(album.albumTitle)}" aria-label="Album title"></label>
           <p>${esc(imaginedBio(album))}</p>
         </div>
         <figure class="cover">
@@ -1711,10 +1715,14 @@ function renderBand() {
         <button type="button" class="btn" id="close-band">Back to the lineup</button>
       </div>
       <p class="fine" id="album-status">The ZIP is built in the browser: one WAV and one MIDI for each track. It can take a while.</p>
+      <div class="band-actions">
+        <button type="button" class="btn" id="add-track" ${album.tracks.length >= TRACK_MAX ? "disabled" : ""}>Add an imagined track</button>
+      </div>
+      <p class="fine">Reorder, rename, or add a song from this same lineup. An album you have not changed keeps the same link as before. Eight tracks is the limit.</p>
       <ol class="tracklist">${tracks}</ol>
     </div>`;
   drawMark(document.querySelector("#band-logo"), song);
-  drawCover(document.querySelector("#album-cover"), { ...song, title: album.albumTitle });
+  drawCover(document.querySelector("#album-cover"), coverSong(album));
   document.querySelector("#play-all").addEventListener("click", () => {
     leaveLiveSet(false);
     state.playAll = true;
@@ -1747,10 +1755,64 @@ function renderBand() {
   });
   document.querySelectorAll("[data-track-midi]").forEach((button) => {
     button.addEventListener("click", () => {
-      const track = album.tracks[Number(button.dataset.trackMidi)];
+      const track = state.band?.tracks[Number(button.dataset.trackMidi)];
+      if (!track) return;
       downloadBlob(new Blob([songToMidi(track)], { type: "audio/midi" }), `${fileStem(track)}.mid`);
     });
   });
+  document.querySelector("#album-title").addEventListener("input", (event) => {
+    state.band = renameAlbum(state.band, event.target.value);
+    const canvas = document.querySelector("#album-cover");
+    if (canvas && state.band.tracks[0]) drawCover(canvas, coverSong(state.band));
+  });
+  document.querySelector("#album-title").addEventListener("change", (event) => {
+    state.band = renameAlbum(state.band, event.target.value);
+    event.target.value = state.band.albumTitle;
+    const canvas = document.querySelector("#album-cover");
+    if (canvas && state.band.tracks[0]) drawCover(canvas, coverSong(state.band));
+    writeBandHash();
+  });
+  document.querySelector("#add-track").addEventListener("click", () => {
+    const seed = freshTrackSeed(state.band, Math.random);
+    if (!seed) return;
+    state.band = addTrack(state.band, generateSong(snapshot(state.band.tracks[0].slots), seed));
+    writeBandHash();
+    renderBand();
+  });
+  document.querySelectorAll("[data-track-up]").forEach((button) => {
+    button.addEventListener("click", () => shiftTrack(Number(button.dataset.trackUp), -1));
+  });
+  document.querySelectorAll("[data-track-down]").forEach((button) => {
+    button.addEventListener("click", () => shiftTrack(Number(button.dataset.trackDown), 1));
+  });
+  document.querySelectorAll("[data-track-remove]").forEach((button) => {
+    button.addEventListener("click", () => dropTrack(Number(button.dataset.trackRemove)));
+  });
+}
+
+function shiftTrack(index, delta) {
+  const next = index + delta;
+  state.band = moveTrack(state.band, index, delta);
+  if (state.bandTrack === index) state.bandTrack = next;
+  else if (state.bandTrack === next) state.bandTrack = index;
+  writeBandHash();
+  renderBand();
+}
+
+function dropTrack(index) {
+  const current = state.bandTrack === index;
+  state.band = removeTrack(state.band, index);
+  if (current) {
+    state.bandTrack = null;
+    state.song = null;
+    player.stop();
+    player.load(null);
+    songSection.hidden = true;
+  } else if (Number.isInteger(state.bandTrack) && state.bandTrack > index) {
+    state.bandTrack -= 1;
+  }
+  writeBandHash();
+  renderBand();
 }
 
 async function copyBandLink() {
@@ -1842,7 +1904,7 @@ function renderGallery() {
   state.bands.forEach((record) => {
     try {
       const decoded = decodeShare(record.encoded);
-      const album = planAlbum(decoded.slots, decoded.seed);
+      const album = buildAlbum(decoded.slots, decoded.seed, decoded.album);
       saved.push({
         sample: false,
         note: "Saved in this browser. Someone else opens it with the share link, not an account.",
@@ -1881,7 +1943,7 @@ function renderGallery() {
       const card = state.galleryCards[Number(button.dataset.openGallery)];
       if (!card) return;
       const decoded = decodeShare(card.encoded);
-      openBand(decoded.slots, decoded.seed, null);
+      openBand(decoded.slots, decoded.seed, null, decoded.album);
     });
   });
   section.querySelectorAll("[data-copy-gallery]").forEach((button) => {
@@ -1954,7 +2016,7 @@ function readRoute() {
     try {
       const decoded = decodeShare(decodeURIComponent(band[1]));
       const index = track ? Number(track[1]) : null;
-      openBand(decoded.slots, decoded.seed, index);
+      openBand(decoded.slots, decoded.seed, index, decoded.album);
       if (decoded.edit) {
         /* album tracks are the imagined songs; a band link does not carry sheet edits */
       }
