@@ -10,6 +10,7 @@ import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "../js/set.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
+import { lyricBlocks, lyricText } from "../js/lyrics.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -689,6 +690,18 @@ for (let n = 0; n < 40; n += 1) {
   capped = rememberBand(capped, { bandName: `Band ${n}`, albumTitle: "Album", encoded: `enc${n}`, savedAt: n });
 }
 if (capped.length !== BAND_LIMIT) fail(`My bands kept ${capped.length}`);
+
+const sheet = lyricBlocks(a);
+const sung = sheet.filter((block) => block.lines.length);
+if (sheet.length < 4) fail(`lyric sheet had ${sheet.length} sections`);
+if (sung.length < 3) fail("lyric sheet dropped the original lines");
+if (sung.some((block) => !block.chords)) fail("a lyric section lost its chords");
+const sheetText = lyricText(a);
+if (!sheetText.startsWith(a.title) || !sheetText.includes(a.bandName) || !sheetText.includes("not taken from a real song")) {
+  fail("lyric sheet text missed the song or the disclaimer");
+}
+if (sheetText !== lyricText(b)) fail("lyric sheet was not deterministic");
+if (sheet.some((block) => block.lines.join(" ").includes("\n"))) fail("a lyric line broke the sheet");
 
 if (failures.length) {
   console.error(failures.join("\n"));
