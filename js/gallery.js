@@ -1,5 +1,6 @@
 /** Sample band pages, plus bands the listener saves on this device. */
 
+import { buildAlbum } from "./album.js";
 import { planAlbum } from "./band.js";
 import { getMusician } from "./musicians.js";
 import { blankSlots, encodeShare } from "./song.js";
