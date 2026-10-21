@@ -7,7 +7,8 @@ import {
   createCustomMusician,
   roleLabel,
 } from "./musicians.js";
-import { imaginedBio, planAlbum } from "./band.js";
+import { addTrack, albumPayload, buildAlbum, coverSong, freshTrackSeed, moveTrack, removeTrack, renameAlbum, TRACK_MAX } from "./album.js";
+import { imaginedBio } from "./band.js";
 import { BANDS_KEY, bandRecord, featuredBands, forgetBand, rememberBand } from "./gallery.js";
 import { drawCover, drawMark } from "./cover.js";
 import {
@@ -33,6 +34,7 @@ import { createPlayer, encodeWav } from "./player.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "./set.js";
 import { zipStore } from "./zip.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup } from "./battle.js";
+import { lyricBlocks, lyricText } from "./lyrics.js";
 import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
@@ -65,6 +67,8 @@ const state = {
   bands: loadBands(),
   battle: null,
   battleSide: "",
+  lyricOpen: false,
+  lyricIndex: -1,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -303,10 +307,62 @@ function formatClock(seconds) {
   return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
 }
 
+function renderLyricSheet() {
+  const section = document.querySelector("#lyric-sheet");
+  if (!section) return;
+  const song = state.song;
+  if (!state.lyricOpen || !song) {
+    section.hidden = true;
+    section.innerHTML = "";
+    return;
+  }
+  const blocks = lyricBlocks(song);
+  const current = player.sectionIndex(player.currentTime());
+  state.lyricIndex = current;
+  section.hidden = false;
+  section.innerHTML = `<div class="lyric-sheet">
+    <p class="lyric-kicker">Original lyrics</p>
+    <h2>${esc(song.title)}</h2>
+    <p class="band-name">${esc(song.bandName)}</p>
+    <p class="fine">${song.tempo} BPM · ${esc(song.key)} · ${esc(song.timeSignature)}. These words were written for this imagined song. They are not sung, and they are not taken from a real song.</p>
+    <div class="lyrics">
+      ${blocks.map((block) => `<div class="lyric-block${block.index === current ? " is-current" : ""}" data-section="${block.index}">
+        <h3>${esc(block.name)}</h3>
+        ${block.chords ? `<p class="lyric-chords">${block.chords.split(/\s+/).filter(Boolean).map((chord) => `<span>${esc(chord)}</span>`).join("")}</p>` : ""}
+        ${block.lines.length ? block.lines.map((line) => `<p>${esc(line)}</p>`).join("") : `<p class="fine">Instrumental</p>`}
+      </div>`).join("")}
+    </div>
+    <div class="lyric-actions">
+      <button type="button" class="btn" id="copy-lyrics">Copy lyrics</button>
+      <button type="button" class="btn" id="print-lyrics">Print</button>
+      <button type="button" class="btn" id="close-lyrics">Close</button>
+    </div>
+  </div>`;
+  document.querySelector("#copy-lyrics").addEventListener("click", () => {
+    copyText(lyricText(song), "Lyrics copied.");
+  });
+  document.querySelector("#print-lyrics").addEventListener("click", () => {
+    document.body.classList.add("is-lyric-print");
+    window.print();
+  });
+  document.querySelector("#close-lyrics").addEventListener("click", () => {
+    state.lyricOpen = false;
+    renderLyricSheet();
+  });
+}
+
+function openLyricSheet() {
+  if (!state.song) return;
+  state.lyricOpen = true;
+  renderLyricSheet();
+  document.querySelector("#lyric-sheet")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
 function renderSong() {
   const song = state.song;
   if (!song) {
     songSection.hidden = true;
+    renderLyricSheet();
     return;
   }
   songSection.hidden = false;
@@ -383,6 +439,7 @@ function renderSong() {
         <button type="button" class="btn" id="share">Copy share link</button>
         <button type="button" class="btn" id="download-midi">Download MIDI</button>
         <button type="button" class="btn" id="download-wav">Download WAV</button>
+        <button type="button" class="btn" id="open-lyrics">Lyrics sheet</button>
         <button type="button" class="btn" id="open-band">Band page</button>
         <button type="button" class="btn" id="open-battle">Rival song</button>
       </div>
@@ -434,6 +491,8 @@ function renderSong() {
   document.querySelector("#download-wav").addEventListener("click", downloadWav);
   document.querySelector("#open-band").addEventListener("click", () => openBand(song.slots, song.seed, null));
   document.querySelector("#open-battle").addEventListener("click", startBattle);
+  document.querySelector("#open-lyrics").addEventListener("click", openLyricSheet);
+  renderLyricSheet();
   document.querySelector("#play").addEventListener("click", () => {
     player.play().catch(() => toast("This browser couldn't start audio."));
   });
@@ -681,7 +740,7 @@ function applyDraft(draft, rerender) {
 }
 
 function paintLyrics() {
-  const root = document.querySelector(".lyrics");
+  const root = document.querySelector("#song-section .lyrics");
   if (!root || !state.song) return;
   root.innerHTML = state.song.structure.filter((section) => (section.lines || []).some((line) => line.trim())).map((section) => `
     <div class="lyric-block" data-section="${section.index}">
@@ -796,6 +855,7 @@ function bindEditor() {
       const index = Number(input.dataset.index);
       state.song.structure[index].lines = input.value.split("\n").slice(0, 8);
       paintLyrics();
+      if (state.lyricOpen) renderLyricSheet();
     });
     input.addEventListener("blur", () => {
       state.editMarked = false;
@@ -1548,6 +1608,10 @@ player.onProgress((time, index) => {
   document.querySelectorAll("[data-section]").forEach((el) => {
     el.classList.toggle("is-current", Number(el.dataset.section) === index);
   });
+  if (state.lyricOpen && index !== state.lyricIndex) {
+    state.lyricIndex = index;
+    document.querySelector(`#lyric-sheet [data-section="${index}"]`)?.scrollIntoView({ block: "nearest" });
+  }
   document.querySelectorAll("#timeline, #mini-timeline").forEach((el) => {
     el.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
     el.setAttribute("aria-valuetext", label);
@@ -1668,9 +1732,10 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("resize", updateChrome);
+window.addEventListener("afterprint", () => document.body.classList.remove("is-lyric-print"));
 
 function bandCode(album) {
-  return encodeShare(album.tracks[0].slots, album.seed);
+  return encodeShare(album.tracks[0].slots, album.seed, { album: albumPayload(album) });
 }
 
 function writeBandHash() {
@@ -1767,13 +1832,13 @@ function renderLive() {
   document.querySelector("#live-leave").addEventListener("click", () => leaveLiveSet(true));
 }
 
-function openBand(slots, seed, track) {
+function openBand(slots, seed, track, albumCode) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
   hideGallery();
   state.playAll = false;
-  const album = planAlbum(snapshot(slots), seed);
+  const album = buildAlbum(snapshot(slots), seed, albumCode);
   state.band = album;
   const index = Number.isInteger(track) && album.tracks[track] ? track : null;
   state.bandTrack = index;
@@ -1828,7 +1893,10 @@ function renderBand() {
   const tracks = album.tracks.map((track, index) => `
     <li class="${index === state.bandTrack ? "is-current" : ""}">
       <button type="button" data-track="${index}"><strong>${index + 1}. ${esc(track.title)}</strong><span>${track.tempo} BPM · ${esc(track.key)} · ${esc(track.durationLabel)}</span></button>
-      <button type="button" data-track-midi="${index}">MIDI</button>
+      <button type="button" class="track-side" data-track-up="${index}" ${index === 0 ? "disabled" : ""}>Up</button>
+      <button type="button" class="track-side" data-track-down="${index}" ${index === album.tracks.length - 1 ? "disabled" : ""}>Down</button>
+      <button type="button" class="track-side" data-track-remove="${index}" ${album.tracks.length <= 1 ? "disabled" : ""}>Remove</button>
+      <button type="button" class="track-side" data-track-midi="${index}">MIDI</button>
     </li>`).join("");
   bandSection.innerHTML = `
     <div class="band-page" id="band-page">
@@ -1846,7 +1914,7 @@ function renderBand() {
           <div class="roster">
             ${song.roster.map((entry) => `<span><em>${esc(ROLE_LABEL[entry.role])}</em> ${esc(entry.name)}</span>`).join("")}
           </div>
-          <h3>${esc(album.albumTitle)}</h3>
+          <label class="album-title">Album title <input id="album-title" maxlength="48" value="${esc(album.albumTitle)}" aria-label="Album title"></label>
           <p>${esc(imaginedBio(album))}</p>
         </div>
         <figure class="cover">
@@ -1863,10 +1931,14 @@ function renderBand() {
         <button type="button" class="btn" id="close-band">Back to the lineup</button>
       </div>
       <p class="fine" id="album-status">The ZIP is built in the browser: one WAV and one MIDI for each track. It can take a while.</p>
+      <div class="band-actions">
+        <button type="button" class="btn" id="add-track" ${album.tracks.length >= TRACK_MAX ? "disabled" : ""}>Add an imagined track</button>
+      </div>
+      <p class="fine">Reorder, rename, or add a song from this same lineup. An album you have not changed keeps the same link as before. Eight tracks is the limit.</p>
       <ol class="tracklist">${tracks}</ol>
     </div>`;
   drawMark(document.querySelector("#band-logo"), song);
-  drawCover(document.querySelector("#album-cover"), { ...song, title: album.albumTitle });
+  drawCover(document.querySelector("#album-cover"), coverSong(album));
   document.querySelector("#play-all").addEventListener("click", () => {
     leaveLiveSet(false);
     state.playAll = true;
@@ -1899,10 +1971,64 @@ function renderBand() {
   });
   document.querySelectorAll("[data-track-midi]").forEach((button) => {
     button.addEventListener("click", () => {
-      const track = album.tracks[Number(button.dataset.trackMidi)];
+      const track = state.band?.tracks[Number(button.dataset.trackMidi)];
+      if (!track) return;
       downloadBlob(new Blob([songToMidi(track)], { type: "audio/midi" }), `${fileStem(track)}.mid`);
     });
   });
+  document.querySelector("#album-title").addEventListener("input", (event) => {
+    state.band = renameAlbum(state.band, event.target.value);
+    const canvas = document.querySelector("#album-cover");
+    if (canvas && state.band.tracks[0]) drawCover(canvas, coverSong(state.band));
+  });
+  document.querySelector("#album-title").addEventListener("change", (event) => {
+    state.band = renameAlbum(state.band, event.target.value);
+    event.target.value = state.band.albumTitle;
+    const canvas = document.querySelector("#album-cover");
+    if (canvas && state.band.tracks[0]) drawCover(canvas, coverSong(state.band));
+    writeBandHash();
+  });
+  document.querySelector("#add-track").addEventListener("click", () => {
+    const seed = freshTrackSeed(state.band, Math.random);
+    if (!seed) return;
+    state.band = addTrack(state.band, generateSong(snapshot(state.band.tracks[0].slots), seed));
+    writeBandHash();
+    renderBand();
+  });
+  document.querySelectorAll("[data-track-up]").forEach((button) => {
+    button.addEventListener("click", () => shiftTrack(Number(button.dataset.trackUp), -1));
+  });
+  document.querySelectorAll("[data-track-down]").forEach((button) => {
+    button.addEventListener("click", () => shiftTrack(Number(button.dataset.trackDown), 1));
+  });
+  document.querySelectorAll("[data-track-remove]").forEach((button) => {
+    button.addEventListener("click", () => dropTrack(Number(button.dataset.trackRemove)));
+  });
+}
+
+function shiftTrack(index, delta) {
+  const next = index + delta;
+  state.band = moveTrack(state.band, index, delta);
+  if (state.bandTrack === index) state.bandTrack = next;
+  else if (state.bandTrack === next) state.bandTrack = index;
+  writeBandHash();
+  renderBand();
+}
+
+function dropTrack(index) {
+  const current = state.bandTrack === index;
+  state.band = removeTrack(state.band, index);
+  if (current) {
+    state.bandTrack = null;
+    state.song = null;
+    player.stop();
+    player.load(null);
+    songSection.hidden = true;
+  } else if (Number.isInteger(state.bandTrack) && state.bandTrack > index) {
+    state.bandTrack -= 1;
+  }
+  writeBandHash();
+  renderBand();
 }
 
 async function copyBandLink() {
@@ -1994,7 +2120,7 @@ function renderGallery() {
   state.bands.forEach((record) => {
     try {
       const decoded = decodeShare(record.encoded);
-      const album = planAlbum(decoded.slots, decoded.seed);
+      const album = buildAlbum(decoded.slots, decoded.seed, decoded.album);
       saved.push({
         sample: false,
         note: "Saved in this browser. Someone else opens it with the share link, not an account.",
@@ -2033,7 +2159,7 @@ function renderGallery() {
       const card = state.galleryCards[Number(button.dataset.openGallery)];
       if (!card) return;
       const decoded = decodeShare(card.encoded);
-      openBand(decoded.slots, decoded.seed, null);
+      openBand(decoded.slots, decoded.seed, null, decoded.album);
     });
   });
   section.querySelectorAll("[data-copy-gallery]").forEach((button) => {
@@ -2116,7 +2242,7 @@ function readRoute() {
     try {
       const decoded = decodeShare(decodeURIComponent(band[1]));
       const index = track ? Number(track[1]) : null;
-      openBand(decoded.slots, decoded.seed, index);
+      openBand(decoded.slots, decoded.seed, index, decoded.album);
       if (decoded.edit) {
         /* album tracks are the imagined songs; a band link does not carry sheet edits */
       }

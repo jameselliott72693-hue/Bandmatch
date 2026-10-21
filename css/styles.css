@@ -690,12 +690,28 @@ code {
 
 .tracklist li.is-current button:first-child { border-color: var(--coral); }
 
-.tracklist li button:last-child {
+.tracklist li button.track-side {
   background: transparent;
   border: 1px solid var(--line);
   border-radius: 999px;
   padding: 8px 12px;
   color: var(--muted);
+}
+
+.tracklist li button.track-side:disabled { opacity: 0.35; }
+
+.album-title { display: grid; gap: 6px; margin: 8px 0; color: var(--muted); font-size: 0.85rem; }
+
+.album-title input {
+  width: min(100%, 420px);
+  font: inherit;
+  font-size: 1.35rem;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  padding: 4px 0;
 }
 
 .band-hero figcaption { color: var(--faint); font-size: 0.8rem; margin-top: 6px; }
@@ -763,6 +779,7 @@ body.is-gallery .saved,
 body.is-gallery #band-section,
 body.is-gallery #song-section,
 body.is-gallery #battle-section,
+body.is-gallery #lyric-sheet,
 body.is-gallery #live-section { display: none; }
 
 .battle {
@@ -796,6 +813,61 @@ body.is-gallery #live-section { display: none; }
 
 @media (min-width: 800px) {
   .battle-grid { grid-template-columns: 1fr 1fr; }
+}
+
+.lyric-sheet {
+  margin: 28px 0;
+  padding: 28px 22px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    linear-gradient(180deg, rgba(240, 194, 122, 0.08), transparent 120px),
+    var(--raise-solid);
+}
+
+.lyric-sheet h2 {
+  margin: 0 0 8px;
+  font-size: clamp(2.2rem, 6vw, 3.4rem);
+  line-height: 0.95;
+}
+
+.lyric-kicker { margin: 0; color: var(--gold); letter-spacing: 0.04em; text-transform: uppercase; font-size: 0.78rem; }
+
+.lyric-chords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+  color: var(--gold);
+  font-family: var(--serif);
+}
+
+.lyric-sheet .lyric-block p { font-size: 1.35rem; }
+
+.lyric-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+
+@media print {
+  body.is-lyric-print .site-header,
+  body.is-lyric-print .ethics,
+  body.is-lyric-print .builder,
+  body.is-lyric-print .saved,
+  body.is-lyric-print #band-section,
+  body.is-lyric-print #song-section,
+  body.is-lyric-print #battle-section,
+  body.is-lyric-print #live-section,
+  body.is-lyric-print #gallery-section,
+  body.is-lyric-print .mini-player,
+  body.is-lyric-print .site-footer,
+  body.is-lyric-print #toast,
+  body.is-lyric-print .lyric-actions { display: none !important; }
+  body.is-lyric-print { background: #fff; color: #1a1410; }
+  body.is-lyric-print #lyric-sheet {
+    display: block !important;
+    border: 0;
+    background: #fff;
+    color: #1a1410;
+    margin: 0;
+  }
 }
 
 .gallery-page { display: grid; gap: 22px; }
