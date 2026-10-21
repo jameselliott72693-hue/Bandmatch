@@ -1,6 +1,7 @@
 import { BAND_LIMIT, featuredBands, forgetBand, rememberBand } from "../js/gallery.js";
 import { GENRE_IDS, MUSICIANS, ROLE_IDS } from "../js/musicians.js";
 import { createCustomMusician } from "../js/musicians.js";
+import { addTrack, albumPayload, buildAlbum, freshTrackSeed, moveTrack, removeTrack, renameAlbum } from "../js/album.js";
 import { imaginedBio, planAlbum } from "../js/band.js";
 import { compactEdit, draftFromSong, expandEdit, performSong } from "../js/edit.js";
 import { compareDrafts, forgetVersion, listVersions, saveVersion, versionKey } from "../js/versions.js";
@@ -11,6 +12,8 @@ import { songToMidi } from "../js/midi.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "../js/set.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
 import { mixerForStem, stemList } from "../js/stems.js";
+import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup, roomScore } from "../js/battle.js";
+import { lyricBlocks, lyricText } from "../js/lyrics.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -701,6 +704,96 @@ if (a.mixer.channels.bass.mute) fail("isolating a part changed the song mix");
 const duoSong = generateSong(lineup({ singer: "aretha-franklin", guitar: "nile-rodgers" }), "parts1");
 const duoStems = stemList(duoSong.mixer);
 if (!duoStems.some((stem) => stem.id === "backing")) fail("empty chairs did not keep a backing part");
+
+function rngFrom(seed) {
+  let value = seed >>> 0;
+  return () => {
+    value = (Math.imul(value, 1664525) + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+const rivalA = rivalLineup(fixed, MUSICIANS, rngFrom(9));
+const rivalB = rivalLineup(fixed, MUSICIANS, rngFrom(9));
+if (fixed.singer.id !== "aretha-franklin") fail("a rivalry mutated the home lineup");
+ROLE_IDS.forEach((role) => {
+  const home = fixed[role];
+  const away = rivalA[role];
+  if (Boolean(home) !== Boolean(away)) fail(`rival chair ${role} did not match`);
+  if (home && away.id === home.id) fail(`rival kept ${home.name}`);
+  if (rivalB[role]?.id !== away?.id) fail("rival lineup was not deterministic");
+});
+const homeSong = generateSong(fixed, "k3m9qx");
+const awaySong = generateSong(rivalA, "rival1");
+const call = battleCall(homeSong, awaySong);
+if (call.home !== roomScore(homeSong) || call.away < 0 || call.away > 100) fail("room score was out of range");
+if (!["home", "away", "even"].includes(call.call)) fail("battle call was missing");
+const battleDecoded = decodeBattle(encodeBattle(homeSong, awaySong));
+const battleAgain = battleSongs(battleDecoded.home.slots, battleDecoded.home.seed, battleDecoded.away.slots, battleDecoded.away.seed);
+if (battleAgain.home.title !== homeSong.title || battleAgain.away.title !== awaySong.title) fail("rivalry link did not restore both songs");
+if (battleAgain.home.roster.map((entry) => entry.name).join("|") !== homeSong.roster.map((entry) => entry.name).join("|")) {
+  fail("rivalry link changed the home musicians");
+}
+
+const plannedAlbum = buildAlbum(fixed, "k3m9qx");
+const plannedDirect = planAlbum(fixed, "k3m9qx");
+if (plannedAlbum.custom || albumPayload(plannedAlbum)) fail("an untouched album was treated as edited");
+if (plannedAlbum.albumTitle !== plannedDirect.albumTitle || plannedAlbum.tracks.map((track) => track.seed).join() !== plannedDirect.tracks.map((track) => track.seed).join()) {
+  fail("the default album no longer matches the planned one");
+}
+if (decodeShare(encodeShare(fixed, "k3m9qx")).album) fail("a song share grew an album");
+const renamedAlbum = renameAlbum(plannedAlbum, "  Paper <Room>  ");
+if (renamedAlbum.albumTitle !== "Paper Room" || renamedAlbum.bandName !== plannedAlbum.bandName || !renamedAlbum.custom) fail("album rename failed");
+const movedAlbum = moveTrack(renamedAlbum, 0, 1);
+if (movedAlbum.tracks[1].seed !== renamedAlbum.tracks[0].seed || movedAlbum.tracks[0].seed !== renamedAlbum.tracks[1].seed) fail("album move failed");
+const shorterAlbum = removeTrack(movedAlbum, 0);
+if (shorterAlbum.tracks.length !== movedAlbum.tracks.length - 1) fail("album track was not removed");
+if (removeTrack({ ...shorterAlbum, tracks: [shorterAlbum.tracks[0]] }, 0).tracks.length !== 1) fail("the last album track was removed");
+let n = 0;
+const extraSeed = freshTrackSeed(shorterAlbum, () => {
+  n += 1;
+  return ((n * 17) % 97) / 97;
+});
+const longerAlbum = addTrack(shorterAlbum, generateSong(fixed, extraSeed));
+if (!longerAlbum.tracks.some((track) => track.seed === extraSeed)) fail("album track was not added");
+if (addTrack(longerAlbum, longerAlbum.tracks[0]).tracks.length !== longerAlbum.tracks.length) fail("a duplicate track was added");
+let cappedAlbum = plannedAlbum;
+for (let i = 0; i < 12; i += 1) {
+  const seed = freshTrackSeed(cappedAlbum, () => {
+    n += 1;
+    return ((n * 13) % 89) / 89;
+  });
+  if (seed) cappedAlbum = addTrack(cappedAlbum, generateSong(fixed, seed));
+}
+if (cappedAlbum.tracks.length !== 8) fail(`album cap was ${cappedAlbum.tracks.length}`);
+const albumPacked = encodeShare(fixed, plannedAlbum.seed, { album: albumPayload(renamedAlbum) });
+const albumDecoded = decodeShare(albumPacked);
+const albumRestored = buildAlbum(albumDecoded.slots, albumDecoded.seed, albumDecoded.album);
+if (albumDecoded.slots.singer?.id !== "aretha-franklin" || albumRestored.albumTitle !== "Paper Room") fail("album share lost the lineup or title");
+if (albumRestored.tracks.map((track) => track.title).join("|") !== renamedAlbum.tracks.map((track) => track.title).join("|")) {
+  fail("album share did not restore the tracklist");
+}
+if (renameAlbum(renamedAlbum, plannedAlbum.albumTitle).custom) fail("restoring the original title left the album edited");
+const classicAlbum = buildAlbum(classic.slots, classic.seed, classic.album);
+const classicPlan = planAlbum(classic.slots, classic.seed);
+if (classic.album || classicAlbum.bandName !== classicPlan.bandName || classicAlbum.tracks[0].title !== classicPlan.tracks[0].title) {
+  fail("an old share no longer opens the same album");
+}
+const messyAlbum = buildAlbum(fixed, "k3m9qx", { at: "Room", tr: ["nope!", "abc123", "abc123", "zzzzzz"] });
+if (messyAlbum.albumTitle !== "Room" || messyAlbum.tracks.map((track) => track.seed).join() !== "abc123,zzzzzz") {
+  fail("album codes kept a bad or repeated seed");
+}
+
+const sheet = lyricBlocks(a);
+const sung = sheet.filter((block) => block.lines.length);
+if (sheet.length < 4) fail(`lyric sheet had ${sheet.length} sections`);
+if (sung.length < 3) fail("lyric sheet dropped the original lines");
+if (sung.some((block) => !block.chords)) fail("a lyric section lost its chords");
+const sheetText = lyricText(a);
+if (!sheetText.startsWith(a.title) || !sheetText.includes(a.bandName) || !sheetText.includes("not taken from a real song")) {
+  fail("lyric sheet text missed the song or the disclaimer");
+}
+if (sheetText !== lyricText(b)) fail("lyric sheet was not deterministic");
+if (sheet.some((block) => block.lines.join(" ").includes("\n"))) fail("a lyric line broke the sheet");
 
 if (failures.length) {
   console.error(failures.join("\n"));

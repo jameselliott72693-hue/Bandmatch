@@ -793,6 +793,10 @@ export function encodeShare(slots, seed, extra) {
   if (mix) payload.mix = mix;
   if (extra?.edit) payload.ed = extra.edit;
   if (extra?.versionName) payload.vn = String(extra.versionName).slice(0, 40);
+  if (extra?.album && (extra.album.at || (Array.isArray(extra.album.tr) && extra.album.tr.length))) {
+    const tracks = Array.isArray(extra.album.tr) ? extra.album.tr.slice(0, 8).map((seed) => String(seed).slice(0, 24)) : [];
+    payload.ab = { at: String(extra.album.at || "").slice(0, 48), tr: tracks };
+  }
   let packed = packText(JSON.stringify(payload));
   if (packed.length > 4800 && payload.ed) {
     const editHash = hashString(JSON.stringify(payload.ed)).toString(36);
@@ -848,7 +852,16 @@ export function decodeShare(encoded) {
     edit: payload.ed || null,
     editHash: payload.eh || null,
     versionName: typeof payload.vn === "string" ? payload.vn.slice(0, 40) : "",
+    album: readAlbumCode(payload.ab),
   };
+}
+
+function readAlbumCode(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const at = typeof raw.at === "string" ? raw.at : "";
+  const tr = Array.isArray(raw.tr) ? raw.tr.filter((seed) => typeof seed === "string") : [];
+  if (!at && !tr.length) return null;
+  return { at, tr };
 }
 
 export function withSharedMix(song, mix) {
