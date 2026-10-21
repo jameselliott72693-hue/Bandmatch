@@ -469,6 +469,24 @@ code {
 
 .sheet-actions { margin-top: 16px; }
 
+.stems {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.stems ul { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 8px; }
+
+.stems li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
 .player-top { align-items: end; }
 
 #meter {

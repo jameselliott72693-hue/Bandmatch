@@ -10,6 +10,7 @@ import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "../js/set.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
+import { mixerForStem, stemList } from "../js/stems.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -689,6 +690,17 @@ for (let n = 0; n < 40; n += 1) {
   capped = rememberBand(capped, { bandName: `Band ${n}`, albumTitle: "Album", encoded: `enc${n}`, savedAt: n });
 }
 if (capped.length !== BAND_LIMIT) fail(`My bands kept ${capped.length}`);
+
+const stems = stemList(a.mixer);
+if (!stems.some((stem) => stem.id === "lead" && stem.label === "Lead")) fail("song parts missed the lead");
+if (!stems.some((stem) => stem.id === "drums")) fail("song parts missed the drums");
+const bassOnly = mixerForStem(a.mixer, "bass");
+if (bassOnly.channels.bass.mute || bassOnly.channels.bass.solo) fail("the bass part was not left open");
+if (Object.entries(bassOnly.channels).some(([id, channel]) => id !== "bass" && !channel.mute)) fail("a song part did not mute the others");
+if (a.mixer.channels.bass.mute) fail("isolating a part changed the song mix");
+const duoSong = generateSong(lineup({ singer: "aretha-franklin", guitar: "nile-rodgers" }), "parts1");
+const duoStems = stemList(duoSong.mixer);
+if (!duoStems.some((stem) => stem.id === "backing")) fail("empty chairs did not keep a backing part");
 
 if (failures.length) {
   console.error(failures.join("\n"));
