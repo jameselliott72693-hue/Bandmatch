@@ -33,6 +33,7 @@ import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "./set.js";
 import { zipStore } from "./zip.js";
+import { mixerForStem, stemList } from "./stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup } from "./battle.js";
 import { lyricBlocks, lyricText } from "./lyrics.js";
 import { suggestLineup } from "./suggest.js";
@@ -476,6 +477,15 @@ function renderSong() {
         }).join("")}
       </div>
       ${mixerMarkup(song)}
+      <section class="stems" aria-label="Song parts">
+        <h3>Song parts</h3>
+        <p class="fine">Each button renders one mixer channel to a WAV. Lead is a melody, not a voice. When a chair is empty, its notes sit in Backing with the other empty chairs. This is separate from the full-mix WAV.</p>
+        <ul>
+          ${stemList(song.mixer).map((stem) => `<li><span>${esc(stem.label)}</span><button type="button" class="btn" data-stem="${esc(stem.id)}">Download</button></li>`).join("")}
+        </ul>
+        <button type="button" class="btn" id="download-stems">Download all parts</button>
+        <p class="fine" id="stem-status"></p>
+      </section>
       <p class="fine">Click the bar or a section to jump. Loop section repeats whichever section the playhead is in. Lead is a synthesizer, not a vocal. Empty chairs still get a generic part shaped by the lineup.</p>
     </div>`;
   player.load(song.arrangement);
@@ -489,6 +499,10 @@ function renderSong() {
   document.querySelector("#download-cover").addEventListener("click", downloadCover);
   document.querySelector("#download-midi").addEventListener("click", downloadMidi);
   document.querySelector("#download-wav").addEventListener("click", downloadWav);
+  document.querySelector("#download-stems").addEventListener("click", downloadAllStems);
+  document.querySelectorAll("[data-stem]").forEach((button) => {
+    button.addEventListener("click", () => downloadStem(button.dataset.stem));
+  });
   document.querySelector("#open-band").addEventListener("click", () => openBand(song.slots, song.seed, null));
   document.querySelector("#open-battle").addEventListener("click", startBattle);
   document.querySelector("#open-lyrics").addEventListener("click", openLyricSheet);
@@ -1430,6 +1444,69 @@ function downloadMidi() {
   if (!state.song) return;
   const bytes = songToMidi(state.song);
   downloadBlob(new Blob([bytes], { type: "audio/midi" }), `${fileStem(state.song)}.mid`);
+}
+
+let stemBusy = false;
+
+function setStemBusy(busy, message) {
+  stemBusy = busy;
+  document.querySelectorAll("[data-stem], #download-stems").forEach((button) => {
+    button.disabled = busy;
+  });
+  const status = document.querySelector("#stem-status");
+  if (status && message != null) status.textContent = message;
+}
+
+async function renderStem(song, id) {
+  player.load(song.arrangement);
+  player.setMixer(mixerForStem(song.mixer, id));
+  return player.renderOffline();
+}
+
+function restoreSongPlayer() {
+  if (!state.song) return;
+  player.load(state.song.arrangement);
+  player.setMixer(state.song.mixer);
+}
+
+async function downloadStem(id) {
+  const song = state.song;
+  const stem = song && stemList(song.mixer).find((item) => item.id === id);
+  if (!stem || stemBusy || isStale()) return;
+  setStemBusy(true, `Rendering ${stem.label}…`);
+  try {
+    const audio = await renderStem(song, stem.id);
+    downloadBlob(encodeWav(audio), `${fileStem(song)} - ${stem.file}`);
+    setStemBusy(false, `${stem.label} ready.`);
+  } catch {
+    setStemBusy(false, "This browser couldn't render that part.");
+    toast("That part could not be rendered.");
+  } finally {
+    restoreSongPlayer();
+  }
+}
+
+async function downloadAllStems() {
+  const song = state.song;
+  if (!song || stemBusy || isStale()) return;
+  const stems = stemList(song.mixer);
+  setStemBusy(true, "Rendering parts…");
+  const files = [];
+  try {
+    for (let index = 0; index < stems.length; index += 1) {
+      const stem = stems[index];
+      setStemBusy(true, `Rendering ${stem.label} (${index + 1} of ${stems.length})…`);
+      const audio = await renderStem(song, stem.id);
+      files.push({ name: stem.file, data: new Uint8Array(await encodeWav(audio).arrayBuffer()) });
+    }
+    downloadBlob(new Blob([zipStore(files)], { type: "application/zip" }), `${fileStem(song)} - parts.zip`);
+    setStemBusy(false, "All parts ready.");
+  } catch {
+    setStemBusy(false, "This browser couldn't render every part.");
+    toast("The parts could not be rendered.");
+  } finally {
+    restoreSongPlayer();
+  }
 }
 
 async function downloadWav() {
