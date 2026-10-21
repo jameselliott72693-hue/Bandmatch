@@ -778,8 +778,42 @@ body.is-gallery .builder,
 body.is-gallery .saved,
 body.is-gallery #band-section,
 body.is-gallery #song-section,
+body.is-gallery #battle-section,
 body.is-gallery #lyric-sheet,
 body.is-gallery #live-section { display: none; }
+
+.battle {
+  margin: 28px 0;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(520px 180px at 100% 0%, rgba(240, 194, 122, 0.14), transparent 55%),
+    var(--raise-solid);
+}
+
+.battle-grid { display: grid; gap: 16px; margin-top: 14px; }
+
+.battle-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.battle-card.is-playing { border-color: var(--coral); }
+
+.battle-card canvas { width: min(100%, 240px); height: auto; display: block; border-radius: 12px; }
+
+.battle-card h3 { margin: 8px 0 4px; }
+
+.battle-score { font-family: var(--serif); font-size: 1.8rem; margin: 8px 0; }
+
+.battle-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+@media (min-width: 800px) {
+  .battle-grid { grid-template-columns: 1fr 1fr; }
+}
 
 .lyric-sheet {
   margin: 28px 0;
@@ -819,6 +853,7 @@ body.is-gallery #live-section { display: none; }
   body.is-lyric-print .saved,
   body.is-lyric-print #band-section,
   body.is-lyric-print #song-section,
+  body.is-lyric-print #battle-section,
   body.is-lyric-print #live-section,
   body.is-lyric-print #gallery-section,
   body.is-lyric-print .mini-player,

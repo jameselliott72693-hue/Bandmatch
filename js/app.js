@@ -33,6 +33,7 @@ import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "./set.js";
 import { zipStore } from "./zip.js";
+import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup } from "./battle.js";
 import { lyricBlocks, lyricText } from "./lyrics.js";
 import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
@@ -64,6 +65,8 @@ const state = {
   transitionTimer: 0,
   gallery: false,
   bands: loadBands(),
+  battle: null,
+  battleSide: "",
   lyricOpen: false,
   lyricIndex: -1,
 };
@@ -438,6 +441,7 @@ function renderSong() {
         <button type="button" class="btn" id="download-wav">Download WAV</button>
         <button type="button" class="btn" id="open-lyrics">Lyrics sheet</button>
         <button type="button" class="btn" id="open-band">Band page</button>
+        <button type="button" class="btn" id="open-battle">Rival song</button>
       </div>
     </div>
     <div class="player" id="player">
@@ -486,6 +490,7 @@ function renderSong() {
   document.querySelector("#download-midi").addEventListener("click", downloadMidi);
   document.querySelector("#download-wav").addEventListener("click", downloadWav);
   document.querySelector("#open-band").addEventListener("click", () => openBand(song.slots, song.seed, null));
+  document.querySelector("#open-battle").addEventListener("click", startBattle);
   document.querySelector("#open-lyrics").addEventListener("click", openLyricSheet);
   renderLyricSheet();
   document.querySelector("#play").addEventListener("click", () => {
@@ -1215,6 +1220,147 @@ function setHash(song) {
   return encoded;
 }
 
+function clearBattle() {
+  state.battle = null;
+  state.battleSide = "";
+  const section = document.querySelector("#battle-section");
+  if (!section) return;
+  section.hidden = true;
+  section.innerHTML = "";
+}
+
+function battleCard(song, side, score) {
+  const roster = song.roster.map((entry) => `${ROLE_LABEL[entry.role]} ${entry.name}`).join(" · ");
+  return `<article class="battle-card" data-side="${side}">
+    <p class="eyebrow">${side === "home" ? "Your lineup" : "Rival lineup"}</p>
+    <canvas id="battle-cover-${side}" width="800" height="800" aria-label="Imagined cover for ${esc(song.title)}"></canvas>
+    <h3>${esc(song.bandName)}</h3>
+    <p class="genre">${esc(song.title)}</p>
+    <p>${esc(song.genreLabel)}</p>
+    <p class="fine">${esc(song.blend || song.pocket)}</p>
+    <p class="fine">${esc(roster)}</p>
+    <p class="battle-score">${score}</p>
+    <p class="fine">${song.tempo} BPM · ${esc(song.key)} · ${esc(song.durationLabel)}</p>
+    <button type="button" class="btn btn-primary" data-battle-play="${side}">Play</button>
+  </article>`;
+}
+
+function renderBattle() {
+  const section = document.querySelector("#battle-section");
+  if (!section || !state.battle) {
+    clearBattle();
+    return;
+  }
+  const { home, away } = state.battle;
+  const call = battleCall(home, away);
+  const louder = call.call === "home" ? home.bandName : away.bandName;
+  const verdict = call.call === "even" ? "The room calls these two even." : `The louder room is ${louder}.`;
+  section.hidden = false;
+  section.innerHTML = `<div class="battle" id="battle-card">
+    <p class="eyebrow">Imagined rivalry</p>
+    <h2>Two original songs</h2>
+    <p>${esc(verdict)} Home ${call.home}, rival ${call.away}.</p>
+    <p class="fine">The number is only how fast, dense, and driven the imagined arrangement is. It is not a ranking of the real musicians. Both songs are original. Nothing is sung, and no real melody is used.</p>
+    <div class="battle-grid">
+      ${battleCard(home, "home", call.home)}
+      ${battleCard(away, "away", call.away)}
+    </div>
+    <div class="battle-actions">
+      <button type="button" class="btn" id="battle-another">Another rival</button>
+      <button type="button" class="btn" id="battle-share">Copy rivalry link</button>
+      <button type="button" class="btn" id="battle-close">Close</button>
+    </div>
+  </div>`;
+  drawCover(document.querySelector("#battle-cover-home"), home);
+  drawCover(document.querySelector("#battle-cover-away"), away);
+  document.querySelectorAll("[data-battle-play]").forEach((button) => {
+    button.addEventListener("click", () => playBattle(button.dataset.battlePlay));
+  });
+  document.querySelector("#battle-another").addEventListener("click", () => {
+    if (!state.song) return;
+    const awaySlots = rivalLineup(state.song.slots, MUSICIANS, Math.random);
+    const away = generateSong(awaySlots, makeSeed());
+    state.battle = { home: state.song, away };
+    state.battleSide = "";
+    renderBattle();
+  });
+  document.querySelector("#battle-share").addEventListener("click", () => {
+    const encoded = encodeBattle(state.battle.home, state.battle.away);
+    const link = `${location.origin}${location.pathname}${location.search}#vs=${encoded}`;
+    history.replaceState(null, "", `#vs=${encoded}`);
+    copyText(link, "Rivalry link copied.");
+  });
+  document.querySelector("#battle-close").addEventListener("click", () => {
+    const restore = state.song;
+    clearBattle();
+    if (restore) {
+      player.load(restore.arrangement);
+      player.setMixer(restore.mixer);
+    }
+    if (location.hash.startsWith("#vs=") && restore) setHash(restore);
+  });
+}
+
+function startBattle() {
+  if (!state.song || isStale()) {
+    toast("Imagine the current lineup before a rivalry.");
+    return;
+  }
+  const awaySlots = rivalLineup(state.song.slots, MUSICIANS, Math.random);
+  const filled = ROLE_IDS.filter((role) => awaySlots[role]).length;
+  if (filled < 2) {
+    toast("This lineup doesn't have a rival in the pool.");
+    return;
+  }
+  player.stop();
+  state.battle = { home: state.song, away: generateSong(awaySlots, makeSeed()) };
+  state.battleSide = "";
+  renderBattle();
+  document.querySelector("#battle-card")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
+function playBattle(side) {
+  const song = state.battle?.[side];
+  if (!song) return;
+  state.battleSide = side;
+  player.load(song.arrangement);
+  player.setMixer(song.mixer);
+  player.play().catch(() => toast("This browser couldn't start audio."));
+}
+
+function openBattleLink(encoded) {
+  const decoded = decodeBattle(encoded);
+  player.stop();
+  leaveLiveSet(false);
+  clearBattle();
+  hideGallery();
+  state.playAll = false;
+  state.band = null;
+  state.bandTrack = null;
+  if (bandSection) {
+    bandSection.hidden = true;
+    bandSection.innerHTML = "";
+  }
+  state.slots = snapshot(decoded.home.slots);
+  const first = ROLE_IDS.find((role) => state.slots[role]) || "singer";
+  state.selected = first;
+  state.roleFilter = first;
+  const songs = battleSongs(decoded.home.slots, decoded.home.seed, decoded.away.slots, decoded.away.seed);
+  state.song = songs.home;
+  state.originSong = cloneSong(songs.home);
+  state.history = [];
+  state.future = [];
+  state.editMarked = false;
+  state.versionName = "";
+  wasStale = false;
+  render();
+  renderSong();
+  state.battle = songs;
+  state.battleSide = "";
+  renderBattle();
+  document.querySelector("#battle-card")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
 function imagine(forcedSeed) {
   const count = filledCount();
   if (count < 2) return;
@@ -1226,6 +1372,7 @@ function imagine(forcedSeed) {
   }
   player.stop();
   leaveLiveSet(false);
+  clearBattle();
   state.playAll = false;
   state.versionName = "";
   hideGallery();
@@ -1350,6 +1497,7 @@ async function shareSong() {
 }
 
 function applyShared(encoded) {
+  clearBattle();
   const decoded = decodeShare(encoded);
   state.slots = decoded.slots;
   state.swapFrom = null;
@@ -1428,6 +1576,9 @@ player.onState((playing) => {
     button.classList.toggle("is-playing", playing);
   });
   document.querySelector("#player")?.classList.toggle("is-playing", playing);
+  document.querySelectorAll(".battle-card").forEach((card) => {
+    card.classList.toggle("is-playing", playing && card.dataset.side === state.battleSide);
+  });
   if (!playing && state.liveSet && state.band && !state.between && player.position >= player.duration - 0.05) {
     beginTransition();
     return;
@@ -1684,6 +1835,7 @@ function renderLive() {
 function openBand(slots, seed, track, albumCode) {
   player.stop();
   leaveLiveSet(false);
+  clearBattle();
   hideGallery();
   state.playAll = false;
   const album = buildAlbum(snapshot(slots), seed, albumCode);
@@ -2073,6 +2225,16 @@ function readRoute() {
     return;
   }
   hideGallery();
+  const versus = hash.match(/(?:^#|[?&])vs=([^&]+)/);
+  if (versus) {
+    try {
+      openBattleLink(decodeURIComponent(versus[1]));
+    } catch {
+      render();
+      toast("That rivalry link could not be read.");
+    }
+    return;
+  }
   const band = hash.match(/(?:^#|[?&])band=([^&]+)/);
   const track = hash.match(/(?:^#|&)t=(\d+)/);
   const song = hash.match(/(?:^#|[?&])bm=([^&]+)/);
