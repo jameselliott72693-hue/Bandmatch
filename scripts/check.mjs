@@ -10,6 +10,7 @@ import { compactMixer, defaultMixer } from "../js/mixer.js";
 import { songToMidi } from "../js/midi.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "../js/set.js";
 import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "../js/song.js";
+import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup, roomScore } from "../js/battle.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -689,6 +690,35 @@ for (let n = 0; n < 40; n += 1) {
   capped = rememberBand(capped, { bandName: `Band ${n}`, albumTitle: "Album", encoded: `enc${n}`, savedAt: n });
 }
 if (capped.length !== BAND_LIMIT) fail(`My bands kept ${capped.length}`);
+
+function rngFrom(seed) {
+  let value = seed >>> 0;
+  return () => {
+    value = (Math.imul(value, 1664525) + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+const rivalA = rivalLineup(fixed, MUSICIANS, rngFrom(9));
+const rivalB = rivalLineup(fixed, MUSICIANS, rngFrom(9));
+if (fixed.singer.id !== "aretha-franklin") fail("a rivalry mutated the home lineup");
+ROLE_IDS.forEach((role) => {
+  const home = fixed[role];
+  const away = rivalA[role];
+  if (Boolean(home) !== Boolean(away)) fail(`rival chair ${role} did not match`);
+  if (home && away.id === home.id) fail(`rival kept ${home.name}`);
+  if (rivalB[role]?.id !== away?.id) fail("rival lineup was not deterministic");
+});
+const homeSong = generateSong(fixed, "k3m9qx");
+const awaySong = generateSong(rivalA, "rival1");
+const call = battleCall(homeSong, awaySong);
+if (call.home !== roomScore(homeSong) || call.away < 0 || call.away > 100) fail("room score was out of range");
+if (!["home", "away", "even"].includes(call.call)) fail("battle call was missing");
+const battleDecoded = decodeBattle(encodeBattle(homeSong, awaySong));
+const battleAgain = battleSongs(battleDecoded.home.slots, battleDecoded.home.seed, battleDecoded.away.slots, battleDecoded.away.seed);
+if (battleAgain.home.title !== homeSong.title || battleAgain.away.title !== awaySong.title) fail("rivalry link did not restore both songs");
+if (battleAgain.home.roster.map((entry) => entry.name).join("|") !== homeSong.roster.map((entry) => entry.name).join("|")) {
+  fail("rivalry link changed the home musicians");
+}
 
 if (failures.length) {
   console.error(failures.join("\n"));
