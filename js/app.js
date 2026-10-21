@@ -33,6 +33,7 @@ import { songToMidi } from "./midi.js";
 import { createPlayer, encodeWav } from "./player.js";
 import { TRANSITION_MS, liveKicker, nextTrack } from "./set.js";
 import { zipStore } from "./zip.js";
+import { lyricBlocks, lyricText } from "./lyrics.js";
 import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
@@ -63,6 +64,8 @@ const state = {
   transitionTimer: 0,
   gallery: false,
   bands: loadBands(),
+  lyricOpen: false,
+  lyricIndex: -1,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -301,10 +304,62 @@ function formatClock(seconds) {
   return `${Math.floor(rounded / 60)}:${String(rounded % 60).padStart(2, "0")}`;
 }
 
+function renderLyricSheet() {
+  const section = document.querySelector("#lyric-sheet");
+  if (!section) return;
+  const song = state.song;
+  if (!state.lyricOpen || !song) {
+    section.hidden = true;
+    section.innerHTML = "";
+    return;
+  }
+  const blocks = lyricBlocks(song);
+  const current = player.sectionIndex(player.currentTime());
+  state.lyricIndex = current;
+  section.hidden = false;
+  section.innerHTML = `<div class="lyric-sheet">
+    <p class="lyric-kicker">Original lyrics</p>
+    <h2>${esc(song.title)}</h2>
+    <p class="band-name">${esc(song.bandName)}</p>
+    <p class="fine">${song.tempo} BPM · ${esc(song.key)} · ${esc(song.timeSignature)}. These words were written for this imagined song. They are not sung, and they are not taken from a real song.</p>
+    <div class="lyrics">
+      ${blocks.map((block) => `<div class="lyric-block${block.index === current ? " is-current" : ""}" data-section="${block.index}">
+        <h3>${esc(block.name)}</h3>
+        ${block.chords ? `<p class="lyric-chords">${block.chords.split(/\s+/).filter(Boolean).map((chord) => `<span>${esc(chord)}</span>`).join("")}</p>` : ""}
+        ${block.lines.length ? block.lines.map((line) => `<p>${esc(line)}</p>`).join("") : `<p class="fine">Instrumental</p>`}
+      </div>`).join("")}
+    </div>
+    <div class="lyric-actions">
+      <button type="button" class="btn" id="copy-lyrics">Copy lyrics</button>
+      <button type="button" class="btn" id="print-lyrics">Print</button>
+      <button type="button" class="btn" id="close-lyrics">Close</button>
+    </div>
+  </div>`;
+  document.querySelector("#copy-lyrics").addEventListener("click", () => {
+    copyText(lyricText(song), "Lyrics copied.");
+  });
+  document.querySelector("#print-lyrics").addEventListener("click", () => {
+    document.body.classList.add("is-lyric-print");
+    window.print();
+  });
+  document.querySelector("#close-lyrics").addEventListener("click", () => {
+    state.lyricOpen = false;
+    renderLyricSheet();
+  });
+}
+
+function openLyricSheet() {
+  if (!state.song) return;
+  state.lyricOpen = true;
+  renderLyricSheet();
+  document.querySelector("#lyric-sheet")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
 function renderSong() {
   const song = state.song;
   if (!song) {
     songSection.hidden = true;
+    renderLyricSheet();
     return;
   }
   songSection.hidden = false;
@@ -381,6 +436,7 @@ function renderSong() {
         <button type="button" class="btn" id="share">Copy share link</button>
         <button type="button" class="btn" id="download-midi">Download MIDI</button>
         <button type="button" class="btn" id="download-wav">Download WAV</button>
+        <button type="button" class="btn" id="open-lyrics">Lyrics sheet</button>
         <button type="button" class="btn" id="open-band">Band page</button>
       </div>
     </div>
@@ -430,6 +486,8 @@ function renderSong() {
   document.querySelector("#download-midi").addEventListener("click", downloadMidi);
   document.querySelector("#download-wav").addEventListener("click", downloadWav);
   document.querySelector("#open-band").addEventListener("click", () => openBand(song.slots, song.seed, null));
+  document.querySelector("#open-lyrics").addEventListener("click", openLyricSheet);
+  renderLyricSheet();
   document.querySelector("#play").addEventListener("click", () => {
     player.play().catch(() => toast("This browser couldn't start audio."));
   });
@@ -677,7 +735,7 @@ function applyDraft(draft, rerender) {
 }
 
 function paintLyrics() {
-  const root = document.querySelector(".lyrics");
+  const root = document.querySelector("#song-section .lyrics");
   if (!root || !state.song) return;
   root.innerHTML = state.song.structure.filter((section) => (section.lines || []).some((line) => line.trim())).map((section) => `
     <div class="lyric-block" data-section="${section.index}">
@@ -792,6 +850,7 @@ function bindEditor() {
       const index = Number(input.dataset.index);
       state.song.structure[index].lines = input.value.split("\n").slice(0, 8);
       paintLyrics();
+      if (state.lyricOpen) renderLyricSheet();
     });
     input.addEventListener("blur", () => {
       state.editMarked = false;
@@ -1398,6 +1457,10 @@ player.onProgress((time, index) => {
   document.querySelectorAll("[data-section]").forEach((el) => {
     el.classList.toggle("is-current", Number(el.dataset.section) === index);
   });
+  if (state.lyricOpen && index !== state.lyricIndex) {
+    state.lyricIndex = index;
+    document.querySelector(`#lyric-sheet [data-section="${index}"]`)?.scrollIntoView({ block: "nearest" });
+  }
   document.querySelectorAll("#timeline, #mini-timeline").forEach((el) => {
     el.setAttribute("aria-valuenow", String(Math.round(ratio * 100)));
     el.setAttribute("aria-valuetext", label);
@@ -1518,6 +1581,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("resize", updateChrome);
+window.addEventListener("afterprint", () => document.body.classList.remove("is-lyric-print"));
 
 function bandCode(album) {
   return encodeShare(album.tracks[0].slots, album.seed, { album: albumPayload(album) });
