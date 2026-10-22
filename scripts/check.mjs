@@ -14,6 +14,7 @@ import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } 
 import { mixerForStem, stemList } from "../js/stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup, roomScore } from "../js/battle.js";
 import { lyricBlocks, lyricText } from "../js/lyrics.js";
+import { energiesFromBins, videoModel } from "../js/video.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -794,6 +795,19 @@ if (!sheetText.startsWith(a.title) || !sheetText.includes(a.bandName) || !sheetT
 }
 if (sheetText !== lyricText(b)) fail("lyric sheet was not deterministic");
 if (sheet.some((block) => block.lines.join(" ").includes("\n"))) fail("a lyric line broke the sheet");
+
+const quietVideo = energiesFromBins(new Uint8Array(32));
+if (quietVideo.low !== 0 || quietVideo.mid !== 0 || quietVideo.high !== 0 || quietVideo.bars.length !== 16) {
+  fail("a silent spectrum was not quiet");
+}
+const loudVideo = energiesFromBins(new Uint8Array(32).fill(255));
+if (Math.abs(loudVideo.low - 1) > 0.001 || loudVideo.bars.some((bar) => Math.abs(bar - 1) > 0.001)) {
+  fail("a full spectrum did not fill the video");
+}
+const still = videoModel({ genres: ["soul"], sectionIndex: 0, time: 2, bins: null });
+const nextScene = videoModel({ genres: ["soul"], sectionIndex: 4, time: 2, bins: null });
+if (still.spin === nextScene.spin || still.palette[0] === "#ffffff") fail("the video did not follow the section");
+if (still.energy.bars.length !== 16) fail("the video lost its bars");
 
 if (failures.length) {
   console.error(failures.join("\n"));

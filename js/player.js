@@ -289,6 +289,13 @@ export function createPlayer() {
       return this.position;
     },
 
+    spectrum() {
+      if (!this.analyser) return null;
+      const data = new Uint8Array(this.analyser.frequencyBinCount);
+      this.analyser.getByteFrequencyData(data);
+      return data;
+    },
+
     seekRatio(ratio) {
       const clamped = Math.max(0, Math.min(1, ratio));
       this.seekTo(clamped * this.duration);
