@@ -14,6 +14,7 @@ import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } 
 import { mixerForStem, stemList } from "../js/stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup, roomScore } from "../js/battle.js";
 import { lyricBlocks, lyricText } from "../js/lyrics.js";
+import { decodeRemix, encodeRemix, remixChanges } from "../js/remix.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -794,6 +795,26 @@ if (!sheetText.startsWith(a.title) || !sheetText.includes(a.bandName) || !sheetT
 }
 if (sheetText !== lyricText(b)) fail("lyric sheet was not deterministic");
 if (sheet.some((block) => block.lines.join(" ").includes("\n"))) fail("a lyric line broke the sheet");
+
+const prince = MUSICIANS.find((person) => person.id === "prince");
+const miles = MUSICIANS.find((person) => person.id === "miles-davis");
+const guitarSwap = { ...fixed, guitar: prince };
+const guitarChange = remixChanges(fixed, guitarSwap);
+if (guitarChange.length !== 1 || guitarChange[0].text !== "Guitar: Nile Rodgers → Prince") fail(`guitar remix was ${guitarChange.map((item) => item.text).join("; ")}`);
+const added = remixChanges(fixed, { ...fixed, horns: miles });
+if (added.length !== 1 || added[0].text !== "Horns: Miles Davis added") fail("an added chair was not listed");
+const removed = remixChanges(fixed, { ...fixed, keys: null });
+if (removed.length !== 1 || removed[0].text !== "Keys: Stevie Wonder left the chair") fail("a removed chair was not listed");
+if (remixChanges(fixed, fixed).length) fail("an unchanged lineup listed a change");
+const remixPacked = encodeRemix(fixed, "k3m9qx", guitarSwap, "remix01");
+const remixDecoded = decodeRemix(remixPacked);
+if (!remixPacked.startsWith(`${encodeShare(fixed, "k3m9qx")}~`)) fail("the remix link rewrote the original share");
+if (remixDecoded.original.slots.guitar?.id !== "nile-rodgers" || remixDecoded.remix.slots.guitar?.id !== "prince") fail("the remix link lost a chair");
+if (remixDecoded.original.seed !== "k3m9qx" || remixDecoded.remix.seed !== "remix01") fail("the remix link mixed up the seeds");
+if (decodeShare(encodeShare(fixed, "k3m9qx")).seed !== "k3m9qx") fail("a plain share changed while remixes were added");
+let remixThrew = false;
+try { decodeRemix("only-one-side"); } catch { remixThrew = true; }
+if (!remixThrew) fail("a broken remix link was accepted");
 
 if (failures.length) {
   console.error(failures.join("\n"));
