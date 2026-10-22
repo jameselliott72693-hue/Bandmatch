@@ -14,6 +14,16 @@ import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } 
 import { mixerForStem, stemList } from "../js/stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup, roomScore } from "../js/battle.js";
 import { lyricBlocks, lyricText } from "../js/lyrics.js";
+import {
+  ACTIVE_YEAR,
+  challengeReport,
+  decodeChallenge,
+  encodeChallenge,
+  isoWeek,
+  personFits,
+  themeForDate,
+  themeFromStamp,
+} from "../js/challenge.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -794,6 +804,64 @@ if (!sheetText.startsWith(a.title) || !sheetText.includes(a.bandName) || !sheetT
 }
 if (sheetText !== lyricText(b)) fail("lyric sheet was not deterministic");
 if (sheet.some((block) => block.lines.join(" ").includes("\n"))) fail("a lyric line broke the sheet");
+
+if (Object.keys(ACTIVE_YEAR).length !== MUSICIANS.length) fail("a musician is missing a challenge year");
+MUSICIANS.forEach((person) => {
+  if (!Number.isInteger(ACTIVE_YEAR[person.id])) fail(`${person.id} has no challenge year`);
+  if ("activeYear" in person || "year" in person) fail("a breakthrough year was stored on a musician");
+});
+const newYear = isoWeek(new Date(Date.UTC(2021, 0, 1)));
+if (newYear.year !== 2020 || newYear.week !== 53) fail(`2021-01-01 was ${newYear.year}-W${newYear.week}`);
+const lateYear = isoWeek(new Date(Date.UTC(2024, 11, 31)));
+if (lateYear.year !== 2025 || lateYear.week !== 1) fail(`2024-12-31 was ${lateYear.year}-W${lateYear.week}`);
+const sampleDate = new Date(Date.UTC(2026, 9, 22));
+const sampleTheme = themeForDate(sampleDate);
+if (!sampleTheme || themeFromStamp(sampleTheme.stamp).id !== sampleTheme.id) fail("a week did not recover its own theme");
+if (themeForDate(sampleDate).stamp !== themeForDate(new Date(Date.UTC(2026, 9, 22))).stamp) fail("the same date changed themes");
+const early = lineup({ singer: "aretha-franklin", bass: "james-jamerson", drums: "clyde-stubblefield" });
+const beforeTheme = { id: "before-1975", title: "A band from before 1975", detail: "Every seated musician broke through before 1975." };
+if (!challengeReport(beforeTheme, early).pass) fail("an early lineup failed before 1975");
+const withJoan = { ...early, guitar: MUSICIANS.find((person) => person.id === "joan-jett") };
+if (challengeReport(beforeTheme, withJoan).pass) fail("Joan Jett passed a before-1975 band");
+const stringsBand = lineup({ singer: "andrew-bird", keys: "john-cale", strings: "yo-yo-ma" });
+const stringsTheme = { id: "all-strings", title: "An all-strings band", detail: "" };
+if (!challengeReport(stringsTheme, stringsBand).pass) fail("an all-strings lineup failed");
+if (challengeReport(stringsTheme, { ...stringsBand, guitar: MUSICIANS.find((person) => person.id === "nile-rodgers") }).pass) {
+  fail("a guitarist passed the all-strings week");
+}
+const decadeTheme = { id: "one-decade" };
+if (!challengeReport(decadeTheme, lineup({ singer: "aretha-franklin", drums: "ringo-starr" })).pass) fail("one decade rejected the 1960s");
+if (challengeReport(decadeTheme, lineup({ singer: "aretha-franklin", guitar: "nile-rodgers" })).pass) fail("two decades passed as one");
+const seventies = { id: "seventies" };
+if (!challengeReport(seventies, lineup({ guitar: "nile-rodgers", singer: "prince" })).pass) fail("a seventies pair failed");
+if (challengeReport(seventies, early).pass) fail("a sixties lineup passed the seventies");
+const classicTheme = { id: "classic-room" };
+if (!challengeReport(classicTheme, lineup({ singer: "billie-holiday", horns: "louis-armstrong" })).pass) fail("a classic room failed");
+if (challengeReport(classicTheme, early).pass) fail("1960s musicians passed the classic room");
+const noDj = { id: "no-turntables" };
+if (!challengeReport(noDj, lineup({ singer: "aretha-franklin", horns: "miles-davis" })).pass) fail("horns failed the no-turntables week");
+if (challengeReport(noDj, lineup({ singer: "aretha-franklin", dj: "grandmaster-flash" })).pass) fail("a DJ passed the no-turntables week");
+if (challengeReport(noDj, lineup({ singer: "aretha-franklin", guitar: "nile-rodgers" })).pass) fail("a band with no horns or strings passed");
+if (challengeReport(beforeTheme, { singer: early.singer }).pass) fail("one musician passed a challenge");
+const guest = createCustomMusician({
+  name: "Studio Guest",
+  role: "guitar",
+  genres: ["soul"],
+  tempo: "medium",
+  feel: "straight",
+  densityId: "balanced",
+  weightId: "medium",
+  tone: "warm",
+});
+if (challengeReport(beforeTheme, { ...early, guitar: guest }).pass) fail("a custom player passed a year rule");
+if (personFits(decadeTheme, MUSICIANS.find((person) => person.id === "nile-rodgers"), early)) fail("a later decade was marked as fitting");
+if (!personFits(stringsTheme, MUSICIANS.find((person) => person.id === "yo-yo-ma"), {})) fail("a strings player was left out");
+const challengePacked = encodeChallenge(sampleTheme.stamp, early, "k3m9qx");
+const challengeDecoded = decodeChallenge(challengePacked);
+if (challengeDecoded.theme.stamp !== sampleTheme.stamp || challengeDecoded.theme.id !== sampleTheme.id) fail("the challenge link lost its week");
+if (challengeDecoded.slots.singer?.id !== "aretha-franklin" || challengeDecoded.seed !== "k3m9qx") fail("the challenge link lost the lineup");
+if (!challengePacked.startsWith(`${sampleTheme.stamp}~${encodeShare(early, "k3m9qx")}`)) fail("the challenge link rewrote the share");
+if (decodeShare(encodeShare(fixed, "k3m9qx")).seed !== "k3m9qx") fail("a plain share changed while challenges were added");
 
 if (failures.length) {
   console.error(failures.join("\n"));
