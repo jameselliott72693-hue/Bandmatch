@@ -14,6 +14,7 @@ import { decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } 
 import { mixerForStem, stemList } from "../js/stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup, roomScore } from "../js/battle.js";
 import { lyricBlocks, lyricText } from "../js/lyrics.js";
+import { POSTER_NOTE, ROOMS, posterCopy, tourStops } from "../js/poster.js";
 import { suggestLineup } from "../js/suggest.js";
 
 const feelOk = {
@@ -794,6 +795,26 @@ if (!sheetText.startsWith(a.title) || !sheetText.includes(a.bandName) || !sheetT
 }
 if (sheetText !== lyricText(b)) fail("lyric sheet was not deterministic");
 if (sheet.some((block) => block.lines.join(" ").includes("\n"))) fail("a lyric line broke the sheet");
+
+const posterAlbum = planAlbum(fixed, "k3m9qx");
+const posterStops = tourStops(posterAlbum);
+const posterAgain = tourStops(posterAlbum);
+if (posterStops.map((stop) => stop.room).join() !== posterAgain.map((stop) => stop.room).join()) fail("tour rooms were not deterministic");
+if (posterStops.length < 4 || posterStops.some((stop, index) => stop.label !== `Night ${index + 1}` || stop.night !== index + 1)) {
+  fail("tour nights were not labeled");
+}
+if (posterStops.some((stop) => !ROOMS.includes(stop.room))) fail("tour used a room outside the fictional list");
+const otherStops = tourStops(planAlbum(fixed, "soul01"));
+if (otherStops.map((stop) => stop.room).join() === posterStops.map((stop) => stop.room).join()) fail("every seed booked the same rooms");
+const poster = posterCopy(posterAlbum);
+if (poster.note !== POSTER_NOTE || !poster.note.includes("Not a real itinerary")) fail("poster dropped the disclaimer");
+if (poster.bandName !== posterAlbum.bandName || poster.albumTitle !== posterAlbum.albumTitle) fail("poster lost the band or album");
+if (poster.tracks.join("|") !== posterAlbum.tracks.map((track, index) => `${index + 1}. ${track.title}`).join("|")) {
+  fail("setlist dropped a track");
+}
+if (poster.nights.some((line) => /\b(19|20)\d{2}\b/.test(line) || /London|Paris|Chicago|Tokyo/.test(line))) {
+  fail("tour poster used a real place or date");
+}
 
 if (failures.length) {
   console.error(failures.join("\n"));

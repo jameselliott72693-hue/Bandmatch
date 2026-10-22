@@ -689,6 +689,21 @@ code {
 
 .band-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
 
+.poster-board {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 16px;
+  margin: 8px 0 4px;
+}
+
+.poster-board canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 12px;
+  background: #100e0c;
+}
+
 .tracklist { list-style: none; padding: 0; margin: 8px 0 0; display: grid; gap: 8px; }
 
 .tracklist li { display: flex; gap: 8px; align-items: stretch; }
@@ -864,7 +879,38 @@ body.is-gallery #live-section { display: none; }
 
 .lyric-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 
+@media (max-width: 800px) {
+  .poster-board { grid-template-columns: 1fr; }
+}
+
 @media print {
+  body.is-poster-print .site-header,
+  body.is-poster-print .ethics,
+  body.is-poster-print .builder,
+  body.is-poster-print .saved,
+  body.is-poster-print #song-section,
+  body.is-poster-print #battle-section,
+  body.is-poster-print #live-section,
+  body.is-poster-print #gallery-section,
+  body.is-poster-print #lyric-sheet,
+  body.is-poster-print .mini-player,
+  body.is-poster-print .site-footer,
+  body.is-poster-print #toast,
+  body.is-poster-print .band-hero,
+  body.is-poster-print .band-actions,
+  body.is-poster-print .tracklist,
+  body.is-poster-print .album-title,
+  body.is-poster-print .fine { display: none !important; }
+  body.is-poster-print { background: #fff; }
+  body.is-poster-print #band-section,
+  body.is-poster-print .band-page,
+  body.is-poster-print .poster-board { display: block !important; }
+  body.is-poster-print .poster-board canvas {
+    width: 100%;
+    max-height: 90vh;
+    object-fit: contain;
+    page-break-after: always;
+  }
   body.is-lyric-print .site-header,
   body.is-lyric-print .ethics,
   body.is-lyric-print .builder,

@@ -36,6 +36,7 @@ import { zipStore } from "./zip.js";
 import { mixerForStem, stemList } from "./stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup } from "./battle.js";
 import { lyricBlocks, lyricText } from "./lyrics.js";
+import { POSTER_NOTE, drawPoster, drawSetlist } from "./poster.js";
 import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
@@ -1809,7 +1810,10 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("resize", updateChrome);
-window.addEventListener("afterprint", () => document.body.classList.remove("is-lyric-print"));
+window.addEventListener("afterprint", () => {
+  document.body.classList.remove("is-lyric-print");
+  document.body.classList.remove("is-poster-print");
+});
 
 function bandCode(album) {
   return encodeShare(album.tracks[0].slots, album.seed, { album: albumPayload(album) });
@@ -2012,10 +2016,21 @@ function renderBand() {
         <button type="button" class="btn" id="add-track" ${album.tracks.length >= TRACK_MAX ? "disabled" : ""}>Add an imagined track</button>
       </div>
       <p class="fine">Reorder, rename, or add a song from this same lineup. An album you have not changed keeps the same link as before. Eight tracks is the limit.</p>
+      <div class="poster-board" id="poster-board">
+        <canvas id="tour-poster" width="900" height="1280" aria-label="Imagined tour poster for ${esc(album.bandName)}"></canvas>
+        <canvas id="tour-setlist" width="800" height="1100" aria-label="Imagined setlist for ${esc(album.bandName)}"></canvas>
+      </div>
+      <div class="band-actions">
+        <button type="button" class="btn" id="download-poster">Download poster</button>
+        <button type="button" class="btn" id="download-setlist">Download setlist</button>
+        <button type="button" class="btn" id="print-poster">Print poster</button>
+      </div>
+      <p class="fine">${esc(POSTER_NOTE)}</p>
       <ol class="tracklist">${tracks}</ol>
     </div>`;
   drawMark(document.querySelector("#band-logo"), song);
   drawCover(document.querySelector("#album-cover"), coverSong(album));
+  paintTour(album);
   document.querySelector("#play-all").addEventListener("click", () => {
     leaveLiveSet(false);
     state.playAll = true;
@@ -2029,6 +2044,20 @@ function renderBand() {
     document.querySelector("#album-cover").toBlob((blob) => {
       if (blob) downloadBlob(blob, `${fileStem({ bandName: album.bandName, title: album.albumTitle })}.png`);
     }, "image/png");
+  });
+  document.querySelector("#download-poster").addEventListener("click", () => {
+    document.querySelector("#tour-poster")?.toBlob((blob) => {
+      if (blob) downloadBlob(blob, `${fileStem({ bandName: album.bandName, title: "tour poster" })}.png`);
+    }, "image/png");
+  });
+  document.querySelector("#download-setlist").addEventListener("click", () => {
+    document.querySelector("#tour-setlist")?.toBlob((blob) => {
+      if (blob) downloadBlob(blob, `${fileStem({ bandName: album.bandName, title: "setlist" })}.png`);
+    }, "image/png");
+  });
+  document.querySelector("#print-poster").addEventListener("click", () => {
+    document.body.classList.add("is-poster-print");
+    window.print();
   });
   document.querySelector("#close-band").addEventListener("click", () => {
     state.playAll = false;
@@ -2057,12 +2086,14 @@ function renderBand() {
     state.band = renameAlbum(state.band, event.target.value);
     const canvas = document.querySelector("#album-cover");
     if (canvas && state.band.tracks[0]) drawCover(canvas, coverSong(state.band));
+    paintTour(state.band);
   });
   document.querySelector("#album-title").addEventListener("change", (event) => {
     state.band = renameAlbum(state.band, event.target.value);
     event.target.value = state.band.albumTitle;
     const canvas = document.querySelector("#album-cover");
     if (canvas && state.band.tracks[0]) drawCover(canvas, coverSong(state.band));
+    paintTour(state.band);
     writeBandHash();
   });
   document.querySelector("#add-track").addEventListener("click", () => {
@@ -2081,6 +2112,14 @@ function renderBand() {
   document.querySelectorAll("[data-track-remove]").forEach((button) => {
     button.addEventListener("click", () => dropTrack(Number(button.dataset.trackRemove)));
   });
+}
+
+function paintTour(album) {
+  if (!album) return;
+  const poster = document.querySelector("#tour-poster");
+  const setlist = document.querySelector("#tour-setlist");
+  if (poster) drawPoster(poster, album);
+  if (setlist) drawSetlist(setlist, album);
 }
 
 function shiftTrack(index, delta) {
