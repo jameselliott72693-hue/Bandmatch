@@ -36,6 +36,7 @@ import { zipStore } from "./zip.js";
 import { mixerForStem, stemList } from "./stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup } from "./battle.js";
 import { lyricBlocks, lyricText } from "./lyrics.js";
+import { drawVideo, videoModel } from "./video.js";
 import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
@@ -70,6 +71,8 @@ const state = {
   battleSide: "",
   lyricOpen: false,
   lyricIndex: -1,
+  video: false,
+  videoFrame: 0,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -443,6 +446,7 @@ function renderSong() {
         <button type="button" class="btn" id="open-lyrics">Lyrics sheet</button>
         <button type="button" class="btn" id="open-band">Band page</button>
         <button type="button" class="btn" id="open-battle">Rival song</button>
+        <button type="button" class="btn" id="open-video">Music video</button>
       </div>
     </div>
     <div class="player" id="player">
@@ -505,6 +509,7 @@ function renderSong() {
   });
   document.querySelector("#open-band").addEventListener("click", () => openBand(song.slots, song.seed, null));
   document.querySelector("#open-battle").addEventListener("click", startBattle);
+  document.querySelector("#open-video").addEventListener("click", openVideo);
   document.querySelector("#open-lyrics").addEventListener("click", openLyricSheet);
   renderLyricSheet();
   document.querySelector("#play").addEventListener("click", () => {
@@ -1234,6 +1239,84 @@ function setHash(song) {
   return encoded;
 }
 
+function closeVideo() {
+  state.video = false;
+  if (state.videoFrame) cancelAnimationFrame(state.videoFrame);
+  state.videoFrame = 0;
+  const section = document.querySelector("#video-section");
+  if (!section) return;
+  section.hidden = true;
+  section.innerHTML = "";
+}
+
+function paintVideo() {
+  const canvas = document.querySelector("#video-canvas");
+  const song = state.song;
+  if (!state.video || !canvas || !song) return;
+  const stage = document.querySelector("#video-stage");
+  const full = document.fullscreenElement === stage;
+  const width = full ? (stage.clientWidth || 1280) : 1280;
+  const height = full ? Math.max(360, (stage.clientHeight || 720) - 120) : 720;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const index = player.sectionIndex(player.currentTime());
+  const model = videoModel({
+    genres: song.genres,
+    sectionIndex: index,
+    time: player.currentTime(),
+    bins: player.spectrum(),
+  });
+  drawVideo(canvas, model);
+  const caption = document.querySelector("#video-caption");
+  const section = song.structure?.[index];
+  if (caption) caption.textContent = `${section?.name || "Song"} · ${song.tempo} BPM`;
+  state.videoFrame = requestAnimationFrame(paintVideo);
+}
+
+function openVideo() {
+  if (!state.song || isStale()) {
+    toast("Imagine the current lineup before the video.");
+    return;
+  }
+  const section = document.querySelector("#video-section");
+  if (!section) return;
+  state.video = true;
+  section.hidden = false;
+  section.innerHTML = `<div class="video-stage" id="video-stage">
+    <p class="eyebrow">Imagined video</p>
+    <h2>${esc(state.song.title)}</h2>
+    <p class="fine">Shapes drawn in the browser from this arrangement and the sound that is playing. No footage, no photos, and no likenesses. Nothing is sung.</p>
+    <div class="video-frame">
+      <canvas id="video-canvas" width="1280" height="720" aria-label="Animated shapes for ${esc(state.song.title)}"></canvas>
+    </div>
+    <p class="fine" id="video-caption"></p>
+    <div class="video-actions">
+      <button type="button" class="btn btn-primary" id="video-play">Play</button>
+      <button type="button" class="btn" id="video-full">Full screen</button>
+      <button type="button" class="btn" id="video-close">Close</button>
+    </div>
+  </div>`;
+  document.querySelector("#video-play").addEventListener("click", () => {
+    if (player.playing) player.stop();
+    else player.play().catch(() => toast("This browser couldn't start audio."));
+  });
+  document.querySelector("#video-full").addEventListener("click", () => {
+    const stage = document.querySelector("#video-stage");
+    const request = stage?.requestFullscreen || stage?.webkitRequestFullscreen;
+    if (!request) {
+      toast("This browser couldn't open the video full screen.");
+      return;
+    }
+    Promise.resolve(request.call(stage)).catch(() => toast("This browser couldn't open the video full screen."));
+  });
+  document.querySelector("#video-close").addEventListener("click", closeVideo);
+  paintVideo();
+  section.scrollIntoView({ behavior: "instant", block: "start" });
+  if (!player.playing) player.play().catch(() => toast("This browser couldn't start audio."));
+}
+
 function clearBattle() {
   state.battle = null;
   state.battleSide = "";
@@ -1387,6 +1470,7 @@ function imagine(forcedSeed) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  closeVideo();
   state.playAll = false;
   state.versionName = "";
   hideGallery();
@@ -1648,7 +1732,7 @@ function saveCustom(event) {
 }
 
 player.onState((playing) => {
-  document.querySelectorAll("#play, #mini-play").forEach((button) => {
+  document.querySelectorAll("#play, #mini-play, #video-play").forEach((button) => {
     button.textContent = playing ? "Playing" : "Play";
     button.classList.toggle("is-playing", playing);
   });
@@ -1913,6 +1997,7 @@ function openBand(slots, seed, track, albumCode) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  closeVideo();
   hideGallery();
   state.playAll = false;
   const album = buildAlbum(snapshot(slots), seed, albumCode);
