@@ -36,6 +36,7 @@ import { zipStore } from "./zip.js";
 import { mixerForStem, stemList } from "./stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup } from "./battle.js";
 import { lyricBlocks, lyricText } from "./lyrics.js";
+import { challengeReport, decodeChallenge, encodeChallenge, personFits, themeForDate } from "./challenge.js";
 import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
@@ -70,6 +71,7 @@ const state = {
   battleSide: "",
   lyricOpen: false,
   lyricIndex: -1,
+  challenge: null,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -264,6 +266,8 @@ function renderPool() {
       disabled = true;
     } else if (placed) {
       status = "Move here";
+    } else if (!personFits(themeForDate(new Date()), person, state.slots)) {
+      status = "Outside this week";
     }
     return `<button type="button" class="musician" data-id="${esc(person.id)}" ${disabled ? "disabled" : ""}>
       <span class="musician-top">
@@ -1132,6 +1136,7 @@ function render() {
   renderFilters();
   renderFavorites();
   renderSuggestions();
+  renderChallenge();
   updateChrome();
 }
 
@@ -1232,6 +1237,102 @@ function setHash(song) {
   if (state.band) writeBandHash();
   else history.replaceState(null, "", `#bm=${encoded}`);
   return encoded;
+}
+
+function closeChallenge() {
+  state.challenge = null;
+  const section = document.querySelector("#challenge-result");
+  if (!section) return;
+  section.hidden = true;
+  section.innerHTML = "";
+}
+
+function renderChallenge() {
+  const root = document.querySelector("#challenge");
+  if (!root) return;
+  const theme = themeForDate(new Date());
+  const report = challengeReport(theme, state.slots);
+  root.innerHTML = `<section class="challenge" id="challenge-card">
+    <p class="eyebrow">This week · ${esc(theme.stamp)}</p>
+    <h3>${esc(theme.title)}</h3>
+    <p>${esc(theme.detail)}</p>
+    ${report.pass
+      ? `<p class="is-pass">This lineup meets the week.</p>`
+      : `<ul>${report.reasons.map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul>`}
+    <button type="button" class="btn" id="copy-challenge" ${report.pass ? "" : "disabled"}>Copy challenge link</button>
+    <p class="fine">Imagine still works if the lineup misses the week. Only the challenge link waits for a pass. The theme comes from the date, with no server.</p>
+  </section>`;
+  document.querySelector("#copy-challenge").addEventListener("click", copyChallengeLink);
+}
+
+function renderChallengeResult() {
+  const section = document.querySelector("#challenge-result");
+  const saved = state.challenge;
+  if (!section || !saved) {
+    closeChallenge();
+    return;
+  }
+  const report = challengeReport(saved, state.slots);
+  section.hidden = false;
+  section.innerHTML = `<div class="challenge-result" id="challenge-result-card">
+    <p class="eyebrow">Shared week · ${esc(saved.stamp)}</p>
+    <h2>${esc(saved.title)}</h2>
+    <p>${esc(saved.detail)}</p>
+    <p class="${report.pass ? "is-pass" : ""}">${report.pass ? "This lineup still meets that week." : "This lineup does not meet that week."}</p>
+    ${report.reasons.length ? `<ul>${report.reasons.map((reason) => `<li>${esc(reason)}</li>`).join("")}</ul>` : ""}
+    <p class="fine">The week in the link is the week that was shared, even if today has moved on.</p>
+  </div>`;
+}
+
+async function copyChallengeLink() {
+  const theme = themeForDate(new Date());
+  const report = challengeReport(theme, state.slots);
+  if (!report.pass) {
+    toast("This lineup does not meet the week yet.");
+    return;
+  }
+  const seed = state.song && !isStale() ? state.song.seed : makeSeed();
+  const encoded = encodeChallenge(theme.stamp, snapshot(state.slots), seed);
+  const link = `${location.origin}${location.pathname}${location.search}#ch=${encoded}`;
+  history.replaceState(null, "", `#ch=${encoded}`);
+  try {
+    await navigator.clipboard.writeText(link);
+    toast("Challenge link copied.");
+  } catch {
+    toast(link);
+  }
+  openChallenge(encoded);
+}
+
+function openChallenge(encoded) {
+  const decoded = decodeChallenge(encoded);
+  player.stop();
+  leaveLiveSet(false);
+  clearBattle();
+  hideGallery();
+  state.playAll = false;
+  state.band = null;
+  state.bandTrack = null;
+  if (bandSection) {
+    bandSection.hidden = true;
+    bandSection.innerHTML = "";
+  }
+  state.slots = snapshot(decoded.slots);
+  state.challenge = decoded.theme;
+  const song = withSharedMix(generateSong(snapshot(state.slots), decoded.seed), decoded.mix);
+  state.song = song;
+  state.originSong = cloneSong(song);
+  state.history = [];
+  state.future = [];
+  state.editMarked = false;
+  state.versionName = decoded.versionName || "";
+  const first = ROLE_IDS.find((role) => state.slots[role]) || "singer";
+  state.selected = first;
+  state.roleFilter = first;
+  render();
+  renderSong();
+  renderChallengeResult();
+  document.querySelector("#challenge-result-card")?.scrollIntoView({ behavior: "instant", block: "start" });
 }
 
 function clearBattle() {
@@ -1347,6 +1448,7 @@ function openBattleLink(encoded) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  closeChallenge();
   hideGallery();
   state.playAll = false;
   state.band = null;
@@ -1387,6 +1489,7 @@ function imagine(forcedSeed) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  closeChallenge();
   state.playAll = false;
   state.versionName = "";
   hideGallery();
@@ -1575,6 +1678,7 @@ async function shareSong() {
 
 function applyShared(encoded) {
   clearBattle();
+  closeChallenge();
   const decoded = decodeShare(encoded);
   state.slots = decoded.slots;
   state.swapFrom = null;
@@ -1913,6 +2017,7 @@ function openBand(slots, seed, track, albumCode) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  closeChallenge();
   hideGallery();
   state.playAll = false;
   const album = buildAlbum(snapshot(slots), seed, albumCode);
@@ -2302,6 +2407,16 @@ function readRoute() {
     return;
   }
   hideGallery();
+  const challenge = hash.match(/(?:^#|[?&])ch=([^&]+)/);
+  if (challenge) {
+    try {
+      openChallenge(decodeURIComponent(challenge[1]));
+    } catch {
+      render();
+      toast("That challenge link could not be read.");
+    }
+    return;
+  }
   const versus = hash.match(/(?:^#|[?&])vs=([^&]+)/);
   if (versus) {
     try {
