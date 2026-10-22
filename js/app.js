@@ -36,6 +36,7 @@ import { zipStore } from "./zip.js";
 import { mixerForStem, stemList } from "./stems.js";
 import { battleCall, battleSongs, decodeBattle, encodeBattle, rivalLineup } from "./battle.js";
 import { lyricBlocks, lyricText } from "./lyrics.js";
+import { decodeRemix, encodeRemix, remixChanges } from "./remix.js";
 import { suggestLineup } from "./suggest.js";
 import { blankSlots, decodeShare, encodeShare, generateSong, slotSignature, withSharedMix } from "./song.js";
 
@@ -70,6 +71,8 @@ const state = {
   battleSide: "",
   lyricOpen: false,
   lyricIndex: -1,
+  remixBase: null,
+  remixView: null,
 };
 
 const slotsEl = document.querySelector("#slots");
@@ -1132,6 +1135,7 @@ function render() {
   renderFilters();
   renderFavorites();
   renderSuggestions();
+  renderRemixBar();
   updateChrome();
 }
 
@@ -1232,6 +1236,188 @@ function setHash(song) {
   if (state.band) writeBandHash();
   else history.replaceState(null, "", `#bm=${encoded}`);
   return encoded;
+}
+
+function rosterLine(song) {
+  return song.roster.map((entry) => `${ROLE_LABEL[entry.role]} ${entry.name}`).join(" · ");
+}
+
+function clearRemix() {
+  state.remixBase = null;
+  closeRemixView();
+  const bar = document.querySelector("#remix-bar");
+  if (!bar) return;
+  bar.hidden = true;
+  bar.innerHTML = "";
+}
+
+function closeRemixView() {
+  state.remixView = null;
+  const section = document.querySelector("#remix-section");
+  if (!section) return;
+  section.hidden = true;
+  section.innerHTML = "";
+}
+
+function renderRemixBar() {
+  const bar = document.querySelector("#remix-bar");
+  const base = state.remixBase;
+  if (!bar) return;
+  if (!base) {
+    bar.hidden = true;
+    bar.innerHTML = "";
+    return;
+  }
+  const changes = remixChanges(base.slots, state.slots);
+  bar.hidden = false;
+  bar.innerHTML = `<div class="remix-bar">
+    <p class="eyebrow">Remix</p>
+    <p>Swap a chair in ${esc(base.bandName)}, then send the link. It keeps “${esc(base.title)}” beside the new song and lists what changed.</p>
+    ${changes.length ? `<ul>${changes.map((change) => `<li>${esc(change.text)}</li>`).join("")}</ul>` : `<p class="fine">Nothing has changed yet.</p>`}
+    <div class="remix-actions">
+      <button type="button" class="btn btn-primary" id="copy-remix" ${changes.length ? "" : "disabled"}>Copy remix link</button>
+      <button type="button" class="btn" id="cancel-remix">Cancel</button>
+    </div>
+  </div>`;
+  document.querySelector("#copy-remix").addEventListener("click", copyRemixLink);
+  document.querySelector("#cancel-remix").addEventListener("click", () => {
+    state.slots = snapshot(state.remixBase.slots);
+    state.remixBase = null;
+    render();
+    toast("Remix cancelled. The original chairs are back.");
+  });
+}
+
+function renderRemixView() {
+  const section = document.querySelector("#remix-section");
+  const view = state.remixView;
+  if (!section || !view) {
+    closeRemixView();
+    return;
+  }
+  section.hidden = false;
+  const card = (song, side, label) => `<article class="remix-card">
+    <p class="eyebrow">${label}</p>
+    <h3>${esc(song.bandName)}</h3>
+    <p class="genre">${esc(song.title)}</p>
+    <p>${esc(song.genreLabel)} · ${song.tempo} BPM</p>
+    <p class="fine">${esc(rosterLine(song))}</p>
+    <button type="button" class="btn btn-primary" data-remix-play="${side}">Play ${label.toLowerCase()}</button>
+  </article>`;
+  section.innerHTML = `<div class="remix-view" id="remix-view">
+    <p class="eyebrow">Remix link</p>
+    <h2>Original and remix</h2>
+    <p class="fine">Both songs are original. Nothing is sung, and no real melody is used. The remix is a new imagination of the swapped lineup.</p>
+    <ul>${view.changes.map((change) => `<li>${esc(change.text)}</li>`).join("")}</ul>
+    <div class="remix-grid">
+      ${card(view.original, "original", "Original")}
+      ${card(view.remix, "remix", "Remix")}
+    </div>
+    <button type="button" class="btn" id="close-remix">Close</button>
+  </div>`;
+  section.querySelectorAll("[data-remix-play]").forEach((button) => {
+    button.addEventListener("click", () => playRemixSide(button.dataset.remixPlay));
+  });
+  document.querySelector("#close-remix").addEventListener("click", closeRemixView);
+}
+
+function playRemixSide(side) {
+  const song = state.remixView?.[side];
+  if (!song) return;
+  state.song = song;
+  state.slots = snapshot(song.slots);
+  state.originSong = cloneSong(song);
+  state.history = [];
+  state.future = [];
+  state.editMarked = false;
+  const first = ROLE_IDS.find((role) => state.slots[role]) || "singer";
+  state.selected = first;
+  state.roleFilter = first;
+  player.stop();
+  render();
+  renderSong();
+  renderRemixView();
+  player.play().catch(() => toast("This browser couldn't start audio."));
+}
+
+function openRemixLink(encoded) {
+  const decoded = decodeRemix(encoded);
+  const original = generateSong(decoded.original.slots, decoded.original.seed);
+  const remix = generateSong(decoded.remix.slots, decoded.remix.seed);
+  player.stop();
+  leaveLiveSet(false);
+  clearBattle();
+  hideGallery();
+  state.playAll = false;
+  state.remixBase = null;
+  state.band = null;
+  state.bandTrack = null;
+  if (bandSection) {
+    bandSection.hidden = true;
+    bandSection.innerHTML = "";
+  }
+  state.remixView = {
+    original,
+    remix,
+    changes: remixChanges(decoded.original.slots, decoded.remix.slots),
+  };
+  state.slots = snapshot(remix.slots);
+  state.song = remix;
+  state.originSong = cloneSong(remix);
+  state.history = [];
+  state.future = [];
+  state.editMarked = false;
+  state.versionName = "";
+  const first = ROLE_IDS.find((role) => state.slots[role]) || "singer";
+  state.selected = first;
+  state.roleFilter = first;
+  render();
+  renderSong();
+  renderRemixView();
+  document.querySelector("#remix-view")?.scrollIntoView({ behavior: "instant", block: "start" });
+}
+
+async function copyRemixLink() {
+  const base = state.remixBase;
+  if (!base) return;
+  const changes = remixChanges(base.slots, state.slots);
+  if (!changes.length) {
+    toast("Swap a chair before copying a remix link.");
+    return;
+  }
+  const encoded = encodeRemix(base.slots, base.seed, snapshot(state.slots), makeSeed());
+  const link = `${location.origin}${location.pathname}${location.search}#rm=${encoded}`;
+  history.replaceState(null, "", `#rm=${encoded}`);
+  try {
+    await navigator.clipboard.writeText(link);
+    toast("Remix link copied.");
+  } catch {
+    toast(link);
+  }
+  openRemixLink(encoded);
+}
+
+function startRemix() {
+  const album = state.band;
+  const song = album?.tracks?.[0];
+  if (!song) return;
+  state.remixBase = {
+    slots: snapshot(song.slots),
+    seed: song.seed,
+    bandName: album.bandName,
+    title: song.title,
+  };
+  closeRemixView();
+  state.band = null;
+  state.bandTrack = null;
+  if (bandSection) {
+    bandSection.hidden = true;
+    bandSection.innerHTML = "";
+  }
+  history.replaceState(null, "", location.pathname + location.search);
+  render();
+  document.querySelector("#remix-bar")?.scrollIntoView({ behavior: "instant", block: "center" });
+  toast("Swap a chair, then copy the remix link.");
 }
 
 function clearBattle() {
@@ -1347,6 +1533,7 @@ function openBattleLink(encoded) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  clearRemix();
   hideGallery();
   state.playAll = false;
   state.band = null;
@@ -1387,6 +1574,7 @@ function imagine(forcedSeed) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  closeRemixView();
   state.playAll = false;
   state.versionName = "";
   hideGallery();
@@ -1575,6 +1763,7 @@ async function shareSong() {
 
 function applyShared(encoded) {
   clearBattle();
+  clearRemix();
   const decoded = decodeShare(encoded);
   state.slots = decoded.slots;
   state.swapFrom = null;
@@ -1913,6 +2102,7 @@ function openBand(slots, seed, track, albumCode) {
   player.stop();
   leaveLiveSet(false);
   clearBattle();
+  clearRemix();
   hideGallery();
   state.playAll = false;
   const album = buildAlbum(snapshot(slots), seed, albumCode);
@@ -2003,6 +2193,7 @@ function renderBand() {
         <button type="button" class="btn btn-primary" id="play-all">Play all</button>
         <button type="button" class="btn" id="start-live">Live set</button>
         <button type="button" class="btn" id="copy-band">Copy link</button>
+        <button type="button" class="btn" id="start-remix">Remix this band</button>
         <button type="button" class="btn" id="save-band">Save to My bands</button>
         <button type="button" class="btn" id="download-album">Download album ZIP</button>
         <button type="button" class="btn" id="close-band">Back to the lineup</button>
@@ -2023,6 +2214,7 @@ function renderBand() {
   });
   document.querySelector("#start-live").addEventListener("click", startLiveSet);
   document.querySelector("#copy-band").addEventListener("click", copyBandLink);
+  document.querySelector("#start-remix").addEventListener("click", startRemix);
   document.querySelector("#save-band").addEventListener("click", saveCurrentBand);
   document.querySelector("#download-album").addEventListener("click", downloadAlbum);
   document.querySelector("#download-album-cover").addEventListener("click", () => {
@@ -2302,6 +2494,16 @@ function readRoute() {
     return;
   }
   hideGallery();
+  const remix = hash.match(/(?:^#|[?&])rm=([^&]+)/);
+  if (remix) {
+    try {
+      openRemixLink(decodeURIComponent(remix[1]));
+    } catch {
+      render();
+      toast("That remix link could not be read.");
+    }
+    return;
+  }
   const versus = hash.match(/(?:^#|[?&])vs=([^&]+)/);
   if (versus) {
     try {
